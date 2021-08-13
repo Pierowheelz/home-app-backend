@@ -1,0 +1,6 @@
+# Ignore NodeJS files
+node_modules/
+package-lock.json
+
+# Ignore config file
+common/config/env.config.js
