@@ -67,12 +67,12 @@ exports.routesConfig = function (app) {
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         LightsController.getStatus
     ]);
-    app.get('/eturnon/*', [
+    app.post('/eturnon/*', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         LightsController.turnOn
     ]);
-    app.get('/eturnoff/*', [
+    app.post('/eturnoff/*', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         LightsController.turnOff

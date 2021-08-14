@@ -61,7 +61,7 @@ exports.getStatus = (req, res) => {
     getDeviceStatus( con, requestDevice ).then( (status) => {
         console.log('Device status: ', status);
         
-        res.status(200).send({success:true,status:status,error:''});
+        res.status(200).send({success:true,error:'', ...status});
     });
 };
 
@@ -72,7 +72,7 @@ exports.turnOn = (req, res) => {
     setDeviceStatus( con, requestDevice, 'on' ).then( (status) => {
         console.log('Device status: ', status);
         
-        res.status(200).send({success:true,status:status,error:''});
+        res.status(200).send({success:true,error:'', ...status});
     });
 };
 
@@ -83,6 +83,6 @@ exports.turnOff = (req, res) => {
     setDeviceStatus( con, requestDevice, 'off' ).then( (status) => {
         console.log('Device status: ', status);
         
-        res.status(200).send({success:true,status:status,error:''});
+        res.status(200).send({success:true,error:'', ...status});
     });
 };
