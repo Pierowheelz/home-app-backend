@@ -1,6 +1,7 @@
 const GarageController = require('./controllers/garage.controller');
 const BlindsController = require('./controllers/blinds.controller');
 const SpeakersController = require('./controllers/speakers.controller');
+const LightsController = require('./controllers/lights.controller');
 
 const PermissionMiddleware = require('../common/middlewares/auth.permission.middleware');
 const ValidationMiddleware = require('../common/middlewares/auth.validation.middleware');
@@ -53,5 +54,12 @@ exports.routesConfig = function (app) {
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         SpeakersController.turnOff
+    ]);
+    
+    // Lights
+    app.get('/lights', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        LightsController.getStatus
     ]);
 };
