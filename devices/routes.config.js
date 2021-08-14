@@ -57,9 +57,24 @@ exports.routesConfig = function (app) {
     ]);
     
     // Lights
-    app.get('/lights', [
+    app.get('/elookup/*', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        LightsController.lookupDevice
+    ]);
+    app.get('/estatus/*', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         LightsController.getStatus
+    ]);
+    app.get('/eturnon/*', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        LightsController.turnOn
+    ]);
+    app.get('/eturnoff/*', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        LightsController.turnOff
     ]);
 };

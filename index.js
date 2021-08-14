@@ -10,8 +10,8 @@ const UsersRouter = require('./users/routes.config');
 const DevicesRouter = require('./devices/routes.config');
 // const wsPort = 80801;
 
-const hskey = fs.readFileSync(config.ssl_key);
-const hscert = fs.readFileSync(config.ssl_cert);
+const hskey = fs.readFileSync( config.ssl_key );
+const hscert = fs.readFileSync( config.ssl_cert );
 const options = {
     key: hskey,
     cert: hscert
