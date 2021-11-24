@@ -2,6 +2,7 @@ const GarageController = require('./controllers/garage.controller');
 const BlindsController = require('./controllers/blinds.controller');
 const SpeakersController = require('./controllers/speakers.controller');
 const LightsController = require('./controllers/lights.controller');
+const VentsController = require('./controllers/vents.controller');
 
 const PermissionMiddleware = require('../common/middlewares/auth.permission.middleware');
 const ValidationMiddleware = require('../common/middlewares/auth.validation.middleware');
@@ -42,17 +43,23 @@ exports.routesConfig = function (app) {
     // Speakers
     app.get('/speakers', [
         ValidationMiddleware.validJWTNeeded,
-        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
         SpeakersController.getState
     ]);
     app.post('/speakers/on', [
         ValidationMiddleware.validJWTNeeded,
-        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
         SpeakersController.turnOn
     ]);
     app.post('/speakers/off', [
         ValidationMiddleware.validJWTNeeded,
-        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        SpeakersController.turnOff
+    ]);
+    app.get('/speakers/on/p7tvhtekg4942iw4tv', [
+        SpeakersController.turnOn
+    ]);
+    app.get('/speakers/off/p7tvhtekg4942iw4tv', [
         SpeakersController.turnOff
     ]);
     
@@ -76,5 +83,17 @@ exports.routesConfig = function (app) {
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         LightsController.turnOff
+    ]);
+    
+    // Vents
+    app.get('/vents', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        VentsController.getStatus
+    ]);
+    app.post('/vents/*/*', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        VentsController.updateStatus
     ]);
 };

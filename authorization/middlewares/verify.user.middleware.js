@@ -45,11 +45,13 @@ exports.isPasswordAndUserMatch = (req, res, next) => {
     //             }
     //         }
     //     });
-    
+    console.log('Login attempt: ', req.body.email);
     const userInfo = UserModel.findByEmail(req.body.email);
     if( null == userInfo ){
+        console.log('No matched account - invalid email');
         return res.status(400).send({errors: ['Invalid e-mail or password']});
     }
+    console.log('Found account: ',userInfo);
     let passwordFields = userInfo.password.split('$');
     let salt = passwordFields[0];
     let hash = crypto.createHmac('sha512', salt).update(req.body.password).digest("base64");
@@ -63,6 +65,11 @@ exports.isPasswordAndUserMatch = (req, res, next) => {
         };
         return next();
     } else {
+        let salt = crypto.randomBytes(16).toString('base64');
+        let hash = crypto.createHmac('sha512', salt).update(req.body.password).digest("base64");
+        const tmpPass = salt + "$" + hash;
+        console.log('Password mismatch - invalid password');
+        console.log( tmpPass );
         return res.status(400).send({errors: ['Invalid e-mail or password']});
     }
 };

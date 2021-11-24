@@ -49,8 +49,8 @@ exports.getState = (req, res) => {
         } else if( "ON" == closedSwitchPower ){
             currentState = 'closed';
         } else {
-            //currentState = 'middle';
-            currentState = 'closed'; // Closed switch not yet implemented
+            currentState = 'middle';
+            //currentState = 'closed'; // Closed switch not yet implemented
         }
         
         res.status(200).send({state:currentState});

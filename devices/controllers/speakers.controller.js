@@ -1,7 +1,7 @@
 const mqtt = require('mqtt');
 
 exports.getState = (req, res) => {
-    // get state of garage door ('open', 'closed', 'middle', 'unknown')
+    // get state of speakers ('on', 'off', 'unknown')
     let currentState = 'unknown';
     const client = mqtt.connect('mqtt://127.0.0.1');
     
