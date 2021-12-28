@@ -4,3 +4,6 @@ package-lock.json
 
 # Ignore config file
 common/config/env.config.js
+
+# Ignore DB filesS
+*.db
