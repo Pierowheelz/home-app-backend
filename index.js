@@ -12,9 +12,11 @@ const DevicesRouter = require('./devices/routes.config');
 
 const hskey = fs.readFileSync( config.ssl_key );
 const hscert = fs.readFileSync( config.ssl_cert );
+const cacert = fs.readFileSync( config.ca_cert );
 const options = {
     key: hskey,
-    cert: hscert
+    cert: hscert,
+    ca: cacert
 };
 
 const app = express();
@@ -22,9 +24,10 @@ const app = express();
 app.use(function (req, res, next) {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,POST');
+    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,POST,OPTIONS');
     res.header('Access-Control-Expose-Headers', 'Content-Length');
-    res.header('Access-Control-Allow-Headers', 'Accept, Authorization, Content-Type, X-Requested-With, Range');
+    res.header('Access-Control-Allow-Headers', 'accept,authorization,content-type,x-requested-with,range,credentials');
+    //res.header('Access-Control-Expose-Headers', 'Content-Length');
     if (req.method === 'OPTIONS') {
         return res.sendStatus(200);
     } else {
