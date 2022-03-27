@@ -23,7 +23,7 @@ exports.updateStatus = (req, res) => {
     let requestState = req.url.replace(/^\/\w+\/(\d+)\/(\d+)$/, '$2');
     
     requestState = Math.max( 0, requestState );
-    requestState = Math.min( 150, requestState );
+    requestState = Math.min( 175, requestState );
     const paddedState = ventNumberPad( requestState, 3 );
     
     console.log('Opening vent: '+requestDevice+' to: '+paddedState);
