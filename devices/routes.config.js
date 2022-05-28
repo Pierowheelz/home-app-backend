@@ -10,6 +10,13 @@ const config = require('../common/config/env.config');
 
 const USER = config.permissionLevels.NORMAL_USER;
 
+const MqttHandler = require('./mqttHandler');
+
+const mqttSession = new MqttHandler();
+GarageController.attachMqtt( mqttSession );
+SpeakersController.attachMqtt( mqttSession );
+mqttSession.connect();
+
 exports.routesConfig = function (app) {
     // Garage
     app.get('/garage', [
@@ -26,7 +33,7 @@ exports.routesConfig = function (app) {
     // Blinds
     app.post('/blinds/open', [
         ValidationMiddleware.validJWTNeeded,
-        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
         BlindsController.openBlinds
     ]);
     app.post('/blinds/close', [
@@ -43,7 +50,7 @@ exports.routesConfig = function (app) {
     // Speakers
     app.get('/speakers', [
         ValidationMiddleware.validJWTNeeded,
-        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
         SpeakersController.getState
     ]);
     app.post('/speakers/on', [

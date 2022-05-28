@@ -16,29 +16,43 @@ const cacert = fs.readFileSync( config.ca_cert );
 const options = {
     key: hskey,
     cert: hscert,
-    ca: cacert
+    ca: cacert,
+    timeout: 5000
 };
 
 const app = express();
 
 app.use(function (req, res, next) {
+    req.setTimeout(5001);
+    
+    console.log('Request received...');
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,POST,OPTIONS');
     res.header('Access-Control-Expose-Headers', 'Content-Length');
     res.header('Access-Control-Allow-Headers', 'accept,authorization,content-type,x-requested-with,range,credentials');
+    res.header('Cache-Control', 'public, max-age=0');
     //res.header('Access-Control-Expose-Headers', 'Content-Length');
     if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-    } else {
-        return next();
+        console.log('Options request received.');
+        res.sendStatus(200);
+        return;
     }
+    
+    return next();
 });
 
 app.use(bodyParser.json());
 AuthorizationRouter.routesConfig(app);
 UsersRouter.routesConfig(app);
 DevicesRouter.routesConfig(app);
+
+app.get('/*', (req, res) => {
+    console.log('Error: failed to parse request');
+    
+    res.send('No Route!');
+    return;
+});
 
 const server = https.createServer(options,app);
 server.listen(config.port, function () {
