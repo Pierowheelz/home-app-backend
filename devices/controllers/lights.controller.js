@@ -1,59 +1,73 @@
-const fetch = require('node-fetch');
 const ewelink = require('ewelink-api');
 const config = require('../../common/config/env.config');
 const datastore = require('nedb');
 
+let persistentConnection = null;
+// Reset connection every hour
+let oneHour = 60 * 60 * 1000;
+setInterval(()=>{
+    persistentConnection = null;
+},oneHour);
+
 const getConnection = async ( force ) => {
-    const db = new datastore({ filename: 'connection.db' });
-    db.loadDatabase();
-    
-    console.log('Connecting to eWelink API');
-    // Attempt recovery of existing session
-    const exTokens = new Promise((resolve, reject) => {
-        db.find({ name: 'tokens' }, (err,data) => {
-            if( data && data.length >= 1 ){
-                resolve(data[0].value);
-            } else {
-                resolve(null);
-            }
-        });
-    });
-    let tokens = await exTokens;
-    //console.log('Saved Tokens: ', tokens);
-    
     let connection = null;
-    if( force || null == tokens || tokens.length < 1 ){
-        console.log('No existing connection - establishing new connection');
-        connection = new ewelink({
-            email: config.ewelink_email,
-            password: config.ewelink_password,
-            region: config.ewelink_region,
+    
+    if( null === persistentConnection || force ){
+        const db = new datastore({ filename: 'connection.db' });
+        db.loadDatabase();
+        
+        console.log('Connecting to eWelink API');
+        // Attempt recovery of existing session
+        const exTokens = new Promise((resolve, reject) => {
+            db.find({ name: 'tokens' }, (err,data) => {
+                if( data && data.length >= 1 ){
+                    resolve(data[0].value);
+                } else {
+                    resolve(null);
+                }
+            });
         });
-    
-        const credentials = await connection.getCredentials();
-    
-        const tokens = {};
-        tokens.accessToken = credentials.at;
-        tokens.apiKey = credentials.user.apikey
-        tokens.region = credentials.region;
-        console.log('Got new tokens: ', tokens);
-    
-        // Save token for next time
-        db.update(
-            { name: 'tokens' },
-            { $set: { value: tokens } },
-            { upsert: true },
-            (err, numReplaced) => {
-                console.log('Tokens saved to DB');
-            }
-        );
+        let tokens = await exTokens;
+        //console.log('Saved Tokens: ', tokens);
+        
+        
+        if( force || null == tokens || tokens.length < 1 ){
+            console.log('No existing connection - establishing new connection');
+            connection = new ewelink({
+                email: config.ewelink_email,
+                password: config.ewelink_password,
+                region: config.ewelink_region,
+            });
+            persistentConnection = connection;
+        
+            const credentials = await connection.getCredentials();
+        
+            const tokens = {};
+            tokens.accessToken = credentials.at;
+            tokens.apiKey = credentials.user.apikey
+            tokens.region = credentials.region;
+            console.log('Got new tokens: ', tokens);
+        
+            // Save token for next time
+            db.update(
+                { name: 'tokens' },
+                { $set: { value: tokens } },
+                { upsert: true },
+                (err, numReplaced) => {
+                    console.log('Tokens saved to DB');
+                }
+            );
+        } else {
+            // Re-establish connection from tokens
+            connection = new ewelink({
+                at: tokens.accessToken,
+                apiKey: tokens.apiKey,
+                region: tokens.region
+            });
+            persistentConnection = connection;
+        }
     } else {
-        // Re-establish connection from tokens
-        connection = new ewelink({
-            at: tokens.accessToken,
-            apiKey: tokens.apiKey,
-            region: tokens.region
-        });
+        connection = persistentConnection;
     }
     
     return connection;
@@ -102,6 +116,7 @@ const setDeviceStatus = async ( connection, deviceId, newState ) => {
 };
 
 exports.lookupDevice = async (req, res) => {
+    console.log('ewelink lookup device.');
     const requestDevice = req.url.replace(/^\/\w+\//, '');
     
     const con = await getConnection( false );
@@ -117,6 +132,7 @@ exports.lookupDevice = async (req, res) => {
 
 exports.getStatus = async (req, res) => {
     const requestDevice = req.url.replace(/^\/\w+\//, '');
+    console.log('ewelink get device status.', requestDevice);
     
     const con = await getConnection( false );
     getDeviceStatus( con, requestDevice ).then( (status) => {
@@ -128,6 +144,7 @@ exports.getStatus = async (req, res) => {
 
 exports.turnOn = async (req, res) => {
     const requestDevice = req.url.replace(/^\/\w+\//, '');
+    console.log('ewelink get turn on device.', requestDevice);
     
     const con = await getConnection( false );
     setDeviceStatus( con, requestDevice, 'on' ).then( (status) => {
@@ -139,6 +156,7 @@ exports.turnOn = async (req, res) => {
 
 exports.turnOff = async (req, res) => {
     const requestDevice = req.url.replace(/^\/\w+\//, '');
+    console.log('ewelink turn off device.', requestDevice);
     
     const con = await getConnection( false );
     setDeviceStatus( con, requestDevice, 'off' ).then( (status) => {

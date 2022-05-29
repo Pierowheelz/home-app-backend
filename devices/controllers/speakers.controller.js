@@ -2,6 +2,7 @@ const mqtt = require('mqtt');
 
 let currentState = 'unknown';
 const onMessage = ( msgJson ) => {
+    console.log('speakers message received.');
     // Get Speakers state
     let speakersPower = msgJson.POWER ?? null;
     

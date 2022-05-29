@@ -1,40 +1,43 @@
-const fetch = require('node-fetch');
+const fetchWithTimeout = require('../fetchWithTimeout');
 
-exports.openBlinds = (req, res) => {
+exports.openBlinds = async (req, res) => {
     let result = false;
     
     console.log('Open Blinds');
-    fetch("http://192.168.2.102/?a=1&b=1").then((response) => {
-        console.log(response);
-        res.status(200).send({success:true,error:''});
-    }).catch(err => {
-        console.log(err);
+    const response = fetchWithTimeout("http://192.168.2.102/?a=1&b=1");
+    if (!response.ok) {
+        console.warn('Failed to open blinds');
         res.status(500).send({success:false,error:'offline'});
-    });
+        return;
+    }
+    //const response = await response.json();
+    res.status(200).send({success:true,error:''});
 };
 
-exports.closeBlinds = (req, res) => {
+exports.closeBlinds = async (req, res) => {
     let result = false;
     
     console.log('Close Blinds');
-    fetch("http://192.168.2.102/?a=1&b=2").then((response) => {
-        console.log(response);
-        res.status(200).send({success:true,error:''});
-    }).catch(err => {
-        console.log(err);
+    const response = fetchWithTimeout("http://192.168.2.102/?a=1&b=2");
+    if (!response.ok) {
+        console.warn('Failed to close blinds');
         res.status(500).send({success:false,error:'offline'});
-    });
+        return;
+    }
+    //const response = await response.json();
+    res.status(200).send({success:true,error:''});
 };
 
-exports.stopBlinds = (req, res) => {
+exports.stopBlinds = async (req, res) => {
     let result = false;
     
     console.log('Stop Blinds');
-    fetch("http://192.168.2.102/?a=1&b=5").then((response) => {
-        console.log(response);
-        res.status(200).send({success:true,error:''});
-    }).catch(err => {
-        console.log(err);
+    const response = fetchWithTimeout("http://192.168.2.102/?a=1&b=5");
+    if (!response.ok) {
+        console.warn('Failed to stop blinds');
         res.status(500).send({success:false,error:'offline'});
-    });
+        return;
+    }
+    //const response = await response.json();
+    res.status(200).send({success:true,error:''});
 };

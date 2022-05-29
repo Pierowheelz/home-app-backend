@@ -35,7 +35,8 @@ app.use(function (req, res, next) {
     //res.header('Access-Control-Expose-Headers', 'Content-Length');
     if (req.method === 'OPTIONS') {
         console.log('Options request received.');
-        res.sendStatus(200);
+        //res.sendStatus(200);
+        res.status(200).send('ok');
         return;
     }
     

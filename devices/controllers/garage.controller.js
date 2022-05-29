@@ -1,5 +1,6 @@
 let currentState = 'unknown';
 const onMessage = ( msgJson ) => {
+    console.log('garage message received.');
     // Get Door state
     let openSwitchPower = msgJson.POWER2 ?? null;
     let closedSwitchPower = msgJson.POWER3 ?? null;
@@ -36,6 +37,7 @@ exports.getState = (req, res) => {
 };
 
 exports.triggerButton = (req, res) => {
+    console.log('garage trigger button.');
     const result = sendMqttCommand( 'cmnd/tas_garage/POWER', '1' );
     let resultCode = result ? 200 : 503;
     

@@ -1,24 +1,38 @@
-const fetch = require('node-fetch');
+const fetchWithTimeout = require('../fetchWithTimeout');
 
 const ventNumberPad = ( value, padding ) => {
     const zeroes = new Array(padding+1).join("0");
     return (zeroes + value).slice(-padding);
 };
 
-exports.getStatus = (req, res) => {
-    fetch("http://192.168.2.110/?&t=1")
-        .then( response => response.json() )
-        .then( data => {
-            console.log('Vents status: ',data);
-            res.status(200).send({success:true,error:'',status:data});
-        })
-        .catch(err => {
-            console.log(err);
-            res.status(500).send({success:false,error:'offline',status:'{}'});
-        });
+let ventStatus = null;
+// Fetch fresh status data every 5 minutes
+let statusInterval = 5 * 60 * 1000;
+
+const getVentStatus = async () => {
+    console.log('CRON: fetching vent status.');
+    const response = await fetchWithTimeout("http://192.168.2.110/?&t=1");
+    if (!response.ok) {
+        console.warn('Failed to fetch vent status');
+        console.log(err);
+        return;
+    }
+    const data = await response.json();
+    
+    if( data['0'] ){
+        // We have usable data
+        ventStatus = data;
+    }
+    console.log('Vents status: ',data);
+};
+getVentStatus();
+setInterval(getVentStatus,statusInterval);
+
+exports.getStatus = async (req, res) => {
+    res.status(200).send({success:true,error:'',status:ventStatus});
 };
 
-exports.updateStatus = (req, res) => {
+exports.updateStatus = async (req, res) => {
     const requestDevice = req.url.replace(/^\/\w+\/(\d+)\/(\d+)$/, '$1');
     let requestState = req.url.replace(/^\/\w+\/(\d+)\/(\d+)$/, '$2');
     
@@ -28,14 +42,18 @@ exports.updateStatus = (req, res) => {
     
     console.log('Opening vent: '+requestDevice+' to: '+paddedState);
     
-    fetch("http://192.168.2.110/?a=6&t=1&m="+requestDevice+"&d="+paddedState)
-        .then( response => response.json() )
-        .then( data => {
-            console.log('Vents status: '+data);
-            res.status(200).send({success:true,error:'',status:data});
-        })
-        .catch(err => {
-            console.log(err);
-            res.status(500).send({success:false,error:'offline',status:'{}'});
-        });
+    const response = await fetchWithTimeout("http://192.168.2.110/?a=6&t=1&m="+requestDevice+"&d="+paddedState);
+    if (!response.ok) {
+        console.warn('Failed to update vent status');
+        res.status(500).send({success:false,error:'offline',status:'{}'});
+        return;
+    }
+    const data = await response.json();
+    if( data['0'] ){
+        // We have usable data
+        ventStatus = data;
+    }
+    
+    console.log('Vents status: '+data);
+    res.status(200).send({success:true,error:'',status:ventStatus});
 };
