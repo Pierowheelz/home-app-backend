@@ -38,7 +38,7 @@ HomeAppBackend controller (full description on Github).
         <Mode>r</Mode>
     </Volume>
 </Data>
-<WebUI>http://[IP]:[PORT:3600]</WebUI>
+<WebUI>http://[IP]:[PORT:3800]</WebUI>
 <Banner>http://i.imgur.com/zXpacAF.png</Banner>
 <Icon>http://i.imgur.com/zXpacAF.png</Icon>
 <TemplateURL>https://raw.githubusercontent.com/pierowheelz/home-app-backend/master/home-app-backend.xml</TemplateURL>
