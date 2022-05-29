@@ -27,16 +27,16 @@ HomeAppBackend controller (full description on Github).
   </Publish>
 </Networking>
 <Data>
-  <Volume>
-    <HostDir>/usr/src/home-app-backend</HostDir>
-    <ContainerDir>/usr/src/home-app-backend</ContainerDir>
-    <Mode>rw</Mode>
-  </Volume>
-  <Volume>
-    <HostDir>/mnt/user/appdata/nodejs</HostDir>
-    <ContainerDir>/nodejs</ContainerDir>
-    <Mode>rw</Mode>
-  </Volume>
+    <Volume>
+        <HostDir>/usr/src/home-app-backend</HostDir>
+        <ContainerDir>/home-app-backend</ContainerDir>
+        <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+        <HostDir>/mnt/user/appdata/swag/etc/letsencrypt/</HostDir>
+        <ContainerDir>/keys</ContainerDir>
+        <Mode>r</Mode>
+    </Volume>
 </Data>
 <WebUI>http://[IP]:[PORT:3600]</WebUI>
 <Banner>http://i.imgur.com/zXpacAF.png</Banner>

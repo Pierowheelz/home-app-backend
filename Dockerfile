@@ -2,11 +2,10 @@
 FROM node:16
 
 # Create app directory
-WORKDIR /nodejs
+WORKDIR /home-app-backend
 
-COPY package.json .
-
-RUN npm install --production
+COPY package*.json ./
+RUN npm install
 
 COPY . .
 

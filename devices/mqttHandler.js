@@ -1,4 +1,6 @@
 const mqtt = require('mqtt');
+const config = require('../common/config/env.config');
+const MQURL = config.mqtt_url;
 
 class MqttHandler{
     
@@ -18,7 +20,7 @@ class MqttHandler{
     }
     
     connect = () => {
-        this.client = mqtt.connect('mqtt://127.0.0.1');
+        this.client = mqtt.connect('mqtt://'+MQURL);
         
         this.client.on('connect', () => {
             console.log('MQTT connected - fetching current state of devices');
