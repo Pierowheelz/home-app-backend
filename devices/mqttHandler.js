@@ -1,6 +1,6 @@
 const mqtt = require('mqtt');
 const config = require('../common/config/env.config');
-const MQURL = config.mqtt_url;
+const MQSETTINGS = config.mqtt;
 
 class MqttHandler{
     
@@ -20,7 +20,13 @@ class MqttHandler{
     }
     
     connect = () => {
-        this.client = mqtt.connect('mqtt://'+MQURL);
+        const mqOptions = {};
+        if( '' != (MQSETTINGS.username ?? '') ){
+            mqOptions.username = MQSETTINGS.username;
+            mqOptions.password = MQSETTINGS.password;
+        }
+        
+        this.client = mqtt.connect('mqtt://'+MQSETTINGS.url, mqOptions);
         
         this.client.on('connect', () => {
             console.log('MQTT connected - fetching current state of devices');
