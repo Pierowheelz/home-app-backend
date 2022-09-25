@@ -11,19 +11,23 @@ let statusInterval = 5 * 60 * 1000;
 
 const getVentStatus = async () => {
     console.log('CRON: fetching vent status.');
-    const response = await fetchWithTimeout("http://192.168.2.110/?&t=1");
-    if (!response.ok) {
-        console.warn('Failed to fetch vent status');
-        console.log(err);
-        return;
+    try{
+        const response = await fetchWithTimeout("http://192.168.2.110/?&t=1");
+        if (!response.ok) {
+            console.warn('Failed to fetch vent status');
+            console.log(err);
+            return;
+        }
+        const data = await response.json();
+        console.log('Vents status: ',data);
+        if( data['0'] ){
+            // We have usable data
+            ventStatus = data;
+        }
+    } catch (error) {
+        ventStatus = null;
+        console.log('Fetch vent status failed');
     }
-    const data = await response.json();
-    
-    if( data['0'] ){
-        // We have usable data
-        ventStatus = data;
-    }
-    console.log('Vents status: ',data);
 };
 getVentStatus();
 setInterval(getVentStatus,statusInterval);
@@ -41,19 +45,23 @@ exports.updateStatus = async (req, res) => {
     const paddedState = ventNumberPad( requestState, 3 );
     
     console.log('Opening vent: '+requestDevice+' to: '+paddedState);
-    
-    const response = await fetchWithTimeout("http://192.168.2.110/?a=6&t=1&m="+requestDevice+"&d="+paddedState);
-    if (!response.ok) {
-        console.warn('Failed to update vent status');
-        res.status(500).send({success:false,error:'offline',status:'{}'});
-        return;
+    try{
+        const response = await fetchWithTimeout("http://192.168.2.110/?a=6&t=1&m="+requestDevice+"&d="+paddedState);
+        if (!response.ok) {
+            console.warn('Failed to update vent status');
+            res.status(500).send({success:false,error:'offline',status:'{}'});
+            return;
+        }
+        const data = await response.json();
+        if( data['0'] ){
+            // We have usable data
+            ventStatus = data;
+        }
+        
+        console.log('Vents status: '+data);
+    } catch (error) {
+        ventStatus = null;
+        console.log('Update vent status failed');
     }
-    const data = await response.json();
-    if( data['0'] ){
-        // We have usable data
-        ventStatus = data;
-    }
-    
-    console.log('Vents status: '+data);
     res.status(200).send({success:true,error:'',status:ventStatus});
 };
