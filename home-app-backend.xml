@@ -37,6 +37,11 @@ HomeAppBackend controller (full description on Github).
         <ContainerDir>/keys</ContainerDir>
         <Mode>r</Mode>
     </Volume>
+    <Volume>
+        <HostDir>/mnt/user/appdata/home-app-backend/</HostDir>
+        <ContainerDir>/config</ContainerDir>
+        <Mode>r</Mode>
+    </Volume>
 </Data>
 <WebUI>http://[IP]:[PORT:3800]</WebUI>
 <Banner>http://i.imgur.com/zXpacAF.png</Banner>
