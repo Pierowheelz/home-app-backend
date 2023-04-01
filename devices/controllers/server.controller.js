@@ -45,17 +45,19 @@ exports.getState = async (req, res) => {
     const time = new Date().getTime();
     
     // Fetch immediateShutdown/preventShutdown bool file statuses
-    const response = await fetchWithTimeout("http://192.168.1.77:8200/readall?time="+time);
-    if (!response.ok) {
-        console.warn('ServerControl - Failed to fetch status: ', response);
-        res.status(500).send({success:false,error:'offline',status:'{}'});
-        return;
-    }
-    const data = await response.json();
-    if( data ){
-        // We have usable data
-        immediateShutdown = data.immediate ?? immediateShutdown;
-        preventShutdown = data.prevent ?? preventShutdown;
+    if( 'on' == currentState ){ // Skip this if the server is off - it won't work anyway
+        const response = await fetchWithTimeout("http://192.168.1.77:8200/readall?time="+time);
+        if (!response.ok) {
+            console.warn('ServerControl - Failed to fetch status: ', response);
+            res.status(500).send({success:false,error:'offline',status:'{}'});
+            return;
+        }
+        const data = await response.json();
+        if( data ){
+            // We have usable data
+            immediateShutdown = data.immediate ?? immediateShutdown;
+            preventShutdown = data.prevent ?? preventShutdown;
+        }
     }
     
     console.log('ServerControl - got statuses: ', data);
