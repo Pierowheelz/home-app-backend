@@ -3,6 +3,7 @@ const BlindsController = require('./controllers/blinds.controller');
 const SpeakersController = require('./controllers/speakers.controller');
 const LightsController = require('./controllers/lights.controller');
 const VentsController = require('./controllers/vents.controller');
+const ServerController = require('./controllers/server.controller');
 
 const PermissionMiddleware = require('../common/middlewares/auth.permission.middleware');
 const ValidationMiddleware = require('../common/middlewares/auth.validation.middleware');
@@ -15,6 +16,7 @@ const MqttHandler = require('./mqttHandler');
 const mqttSession = new MqttHandler();
 GarageController.attachMqtt( mqttSession );
 SpeakersController.attachMqtt( mqttSession );
+ServerController.attachMqtt( mqttSession );
 mqttSession.connect();
 
 exports.routesConfig = function (app) {
@@ -102,5 +104,27 @@ exports.routesConfig = function (app) {
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         VentsController.updateStatus
+    ]);
+    
+    // ServerControl
+    app.get('/server', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        ServerController.getState
+    ]);
+    app.get('/server/boot', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        ServerController.bootServer
+    ]);
+    app.get('/server/shutdown', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        ServerController.shutdownServer
+    ]);
+    app.get('/server/preventshutdown/*', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        ServerController.togglePreventShutdown
     ]);
 };

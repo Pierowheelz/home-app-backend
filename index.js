@@ -17,13 +17,13 @@ const options = {
     key: hskey,
     cert: hscert,
     ca: cacert,
-    timeout: 5000
+    timeout: 15000
 };
 
 const app = express();
 
 app.use(function (req, res, next) {
-    req.setTimeout(5001);
+    req.setTimeout(15001);
     
     console.log('Request received...');
     res.header('Access-Control-Allow-Origin', '*');

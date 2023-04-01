@@ -33,7 +33,7 @@ class MqttHandler{
             
             this.devices.forEach( (dev) => {
                 console.log('MQTT getching status of device: ', dev.name);
-                this.client.subscribe('stat/'+dev.name+'/#', (err) => {
+                this.client.subscribe( ['stat/'+dev.name+'/#','tele/'+dev.name+'/#'], (err) => {
                     if (!err) {
                         this.client.publish('cmnd/'+dev.name+'/state', '1');
                     }
