@@ -96,7 +96,7 @@ exports.shutdownServer = async (req, res) => {
         const data = await response.text();
         if( data ){
             // We have usable data
-            immediateShutdown = data;
+            immediateShutdown = '1'==data ? 1 : 0;
         }
         
         console.log('ServerControl - `immediate_shutdown` status: '+data);
@@ -124,7 +124,7 @@ exports.togglePreventShutdown = async (req, res) => {
         const data = await response.text();
         if( data ){
             // We have usable data
-            preventShutdown = data;
+            preventShutdown = '1'==data ? 1 : 0;
         }
         
         console.log('ServerControl - `prevent_shutdown` status: '+data);
