@@ -58,9 +58,8 @@ exports.getState = async (req, res) => {
             immediateShutdown = data.immediate ?? immediateShutdown;
             preventShutdown = data.prevent ?? preventShutdown;
         }
+        console.log('ServerControl - got statuses: ', data);
     }
-    
-    console.log('ServerControl - got statuses: ', data);
     
     res.status(200).send({success:true,error:'',state:currentState,consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown});
 };
