@@ -112,17 +112,17 @@ exports.routesConfig = function (app) {
         PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
         ServerController.getState
     ]);
-    app.get('/server/boot', [
+    app.post('/server/boot', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
         ServerController.bootServer
     ]);
-    app.get('/server/shutdown', [
+    app.post('/server/shutdown', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
         ServerController.shutdownServer
     ]);
-    app.get('/server/preventshutdown/*', [
+    app.post('/server/preventshutdown/*', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
         ServerController.togglePreventShutdown
