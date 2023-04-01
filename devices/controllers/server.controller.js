@@ -60,7 +60,7 @@ exports.getState = async (req, res) => {
     
     console.log('ServerControl - got statuses: ', data);
     
-    res.status(200).send({state:currentState,consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown});
+    res.status(200).send({success:true,error:'',state:currentState,consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown});
 };
 
 exports.bootServer = (req, res) => {
