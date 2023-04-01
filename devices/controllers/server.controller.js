@@ -67,18 +67,20 @@ exports.bootServer = (req, res) => {
     console.log('ServerControl - Boot Server.');
     if( 'on' == currentState || 'unknown' == currentState ){
         console.log('Server is already on (or state unknown). Aborting request.');
+        res.status(500).send({success:false,error:'already_on',state:currentState,consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown});
         return;
     }
     const result = sendMqttCommand( 'cmnd/sonoff_server/POWER', '1' );
     let resultCode = result ? 200 : 503;
     
-    res.status(resultCode).send(result);
+    res.status(resultCode).send({success:true,error:'',state:'on',consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown});
 };
 
 exports.shutdownServer = async (req, res) => {
     console.log('ServerControl - Shutdown Server.');
     if( 'off' == currentState || 'unknown' == currentState ){
         console.log('Server is already off (or state unknown). Aborting request.');
+        res.status(500).send({success:false,error:'already_off',state:currentState,consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown});
         return;
     }
     
