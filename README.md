@@ -64,24 +64,23 @@ The terminal will display the encoded password which you can add to your "users"
 3. Setup `env.config.js` (see getting started)
 
 ### Docker installation
-Create directory: /mnt/user/appdata/home-app-backend/
-Add your env.config.js into this folder
-Install via docker.
-Ensure /config volume was created. (create it manually if it wasn't `/config` > `/mnt/user/appdata/home-app-backend/`` )
+Create directory: `/mnt/user/appdata/home-app-backend/. 
+Add your env.config.js into this folder. 
+Install via docker. 
+Ensure /config volume was created. (create it manually if it wasn't `/config` > `/mnt/user/appdata/home-app-backend/`` ). 
 
-### Docker Hub build
-Master build is at: /mnt/user/appdata/nodejs/home-app-backend
+### Docker Hub build 
+Master build is at: `/mnt/user/appdata/nodejs/home-app-backend`. 
 
 Run:
-```sh
+```sh 
 cd /mnt/user/appdata/nodejs/home-app-backend
-git reset --hard
-git pull
+git reset --hard 
+git pull 
+docker build -t pierowheelz/home-app-backend . 
+docker push pierowheelz/home-app-backend 
 ```
-Modify index.js `const config = require('./common/config/env.config.js');` to `const config = require('/config/env.config.js');`
-```sh
-docker build -t pierowheelz/home-app-backend .
-docker push pierowheelz/home-app-backend
+
 Note: If not logged in to Docker Hub, run: `docker login -u pierowheelz` using Access Token generated from Docker Hub account (Account Settings > Security).
 
 <!-- LICENSE -->
