@@ -64,24 +64,34 @@ The terminal will display the encoded password which you can add to your "users"
 3. Setup `env.config.js` (see getting started)
 
 ### Docker installation
-Create directory: `/mnt/user/appdata/home-app-backend/. 
-Add your env.config.js into this folder. 
-Install via docker. 
-Ensure /config volume was created. (create it manually if it wasn't `/config` > `/mnt/user/appdata/home-app-backend/`` ). 
+Create directory: `/mnt/user/appdata/home-app-backend/`.
+Add your env.config.js into this folder.
+Install via docker.
+Ensure /config volume was created. (create it manually if it wasn't `/config` > `/mnt/user/appdata/home-app-backend/` ).
 
-### Docker Hub build 
-Master build is at: `/mnt/user/appdata/nodejs/home-app-backend`. 
-
-Run:
-```sh 
-cd /mnt/user/appdata/nodejs/home-app-backend
-git reset --hard 
-git pull 
-docker build -t pierowheelz/home-app-backend . 
-docker push pierowheelz/home-app-backend 
+### Docker builder setup
+Install Docker Desktop on PC.
+Clone repo to a folder somewhere.
+Open a terminal in that folder and run.
+```sh
+docker buildx create --name mybuilder
+docker buildx use mybuilder
+docker buildx inspect --bootstrap
 ```
+Then proceed to build and push.
 
 Note: If not logged in to Docker Hub, run: `docker login -u pierowheelz` using Access Token generated from Docker Hub account (Account Settings > Security).
+
+
+### Docker build
+Master build is on Peter-PC at: `Documents/apps/home-app-backend`.
+
+Run:
+```sh
+git pull
+docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t pierowheelz/home-app-backend:latest --push .
+```
+
 
 <!-- LICENSE -->
 ## License
