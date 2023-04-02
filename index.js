@@ -1,5 +1,12 @@
 const fs = require('fs');
-const config = require('./common/config/env.config.js');
+const args = process.argv;
+const isDocker = args[2] ?? '';
+let config;
+if( 'docker' == isDocker ){
+    config = require('/config/env.config.js');
+} else {
+    config = require('./common/config/env.config.js');
+}
 const express = require('express');
 const https = require('https');
 const bodyParser = require('body-parser');

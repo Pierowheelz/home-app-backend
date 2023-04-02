@@ -10,4 +10,4 @@ RUN npm install
 COPY . .
 
 EXPOSE 3800
-CMD [ "node", "index.js" ]
+CMD [ "node", "index.js", "docker" ]
