@@ -72,7 +72,7 @@ class MqttHandler{
     };
     
     _sendCommand = ( mgd, data ) => {
-        console.log('Sending MQTT command: ');
+        console.log('Sending MQTT command: ', mgd, data);
         this.client.publish(mgd, data);
         
         return true;
@@ -82,7 +82,7 @@ class MqttHandler{
         console.warn('MQTT Error: ', err);
         
         this.client.end();
-        this.client = mqtt.connect('mqtt://127.0.0.1');
+        this.client = mqtt.connect('mqtt://'+MQSETTINGS.url);
     };
 }
 
