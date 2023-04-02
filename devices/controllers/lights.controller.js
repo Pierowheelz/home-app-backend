@@ -1,5 +1,4 @@
 const ewelink = require('ewelink-api');
-const config = require('../../common/config/env.config');
 const datastore = require('nedb');
 
 let persistentConnection = null;
@@ -34,9 +33,9 @@ const getConnection = async ( force ) => {
         if( force || null == tokens || tokens.length < 1 ){
             console.log('No existing connection - establishing new connection');
             connection = new ewelink({
-                email: config.ewelink_email,
-                password: config.ewelink_password,
-                region: config.ewelink_region,
+                email: appconfig.ewelink_email,
+                password: appconfig.ewelink_password,
+                region: appconfig.ewelink_region,
             });
             persistentConnection = connection;
         

@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken'),
-    secret = require('../config/env.config')['jwt_secret'];
+    secret = appconfig['jwt_secret'];
 
 const ADMIN_PERMISSION = 4096;
 

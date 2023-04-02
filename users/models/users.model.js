@@ -1,6 +1,6 @@
 // const mongoose = require('../../common/services/mongoose.service').mongoose;
 // const Schema = mongoose.Schema;
-const users = require('../../common/config/env.config.js').users;
+const users = appconfig.users;
 
 // const userSchema = new Schema({
 //     firstName: String,

@@ -1,11 +1,11 @@
 const fs = require('fs');
 const args = process.argv;
 const isDocker = args[2] ?? '';
-let config;
+global.appconfig = {};
 if( 'docker' == isDocker ){
-    config = require('/config/env.config.js');
+    appconfig = require('/config/env.config.js');
 } else {
-    config = require('./common/config/env.config.js');
+    appconfig = require('./common/config/env.config.js');
 }
 const express = require('express');
 const https = require('https');
@@ -17,9 +17,9 @@ const UsersRouter = require('./users/routes.config');
 const DevicesRouter = require('./devices/routes.config');
 // const wsPort = 80801;
 
-const hskey = fs.readFileSync( config.ssl_key );
-const hscert = fs.readFileSync( config.ssl_cert );
-const cacert = fs.readFileSync( config.ca_cert );
+const hskey = fs.readFileSync( appconfig.ssl_key );
+const hscert = fs.readFileSync( appconfig.ssl_cert );
+const cacert = fs.readFileSync( appconfig.ca_cert );
 const options = {
     key: hskey,
     cert: hscert,
@@ -63,6 +63,6 @@ app.get('/*', (req, res) => {
 });
 
 const server = https.createServer(options,app);
-server.listen(config.port, function () {
-    console.log('app listening at port %s', config.port);
+server.listen(appconfig.port, function () {
+    console.log('app listening at port %s', appconfig.port);
 });

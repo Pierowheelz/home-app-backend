@@ -1,6 +1,5 @@
 const mqtt = require('mqtt');
-const config = require('../common/config/env.config');
-const MQSETTINGS = config.mqtt;
+const MQSETTINGS = appconfig.mqtt;
 
 class MqttHandler{
     
