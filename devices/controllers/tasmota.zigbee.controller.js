@@ -1,3 +1,5 @@
+const ventAutomation = require('../services/vent.automation.service');
+
 /**
  * Tasmota Zigbee bridge (`tele`/`stat` topic root `tasmota_zigbee`) with temperature sensors.
  *
@@ -12,8 +14,8 @@
 const SENSOR_MAP = {
     '0x954D': 'Guest Room',
     '0xD7D5': 'Stairwell',
-    '0xA33F': 'Peter Room',
-    '0x2047': 'Burton Room',
+    '0xA33F': 'Peter\'s Room',
+    '0x2047': 'Burton\'s Room',
 };
 
 /**
@@ -21,6 +23,8 @@ const SENSOR_MAP = {
  * @property {number|null} temperature Last temperature in °C, or null if never received.
  * @property {number|null} [humidity] Relative humidity % when reported.
  * @property {number|null} [lastUpdateMs] Epoch milliseconds when this sensor last updated.
+ * @property {number|null} [batteryLevel] Battery charge 0–100 from `BatteryPercentage` when reported.
+ * @property {number|null} [linkQuality] Zigbee link quality from `LinkQuality` when reported.
  */
 
 /** @type {Record<string, ZigbeeSensorReading>} Room label → last reading */
@@ -34,14 +38,70 @@ Object.values(SENSOR_MAP).forEach((room) => {
 const ZB_DATA_TEMP_HUM_ANCHOR = '0e05010f00';
 
 /**
+ * Extract optional humidity / radio fields Tasmota exposes on Zigbee device objects.
+ * @param {Record<string, unknown>} payload Device object from `ZbInfo` / `ZbReceived`.
+ * @returns {{ humidity?: number, batteryLevel?: number, linkQuality?: number }}
+ */
+function readPayloadMetrics(payload) {
+    /** @type {{ humidity?: number, batteryLevel?: number, linkQuality?: number }} */
+    const m = {};
+    if (typeof payload.Humidity === 'number' && Number.isFinite(payload.Humidity)) {
+        m.humidity = payload.Humidity;
+    }
+    if (typeof payload.BatteryPercentage === 'number' && Number.isFinite(payload.BatteryPercentage)) {
+        m.batteryLevel = payload.BatteryPercentage;
+    }
+    if (typeof payload.LinkQuality === 'number' && Number.isFinite(payload.LinkQuality)) {
+        m.linkQuality = payload.LinkQuality;
+    }
+    return m;
+}
+
+/**
+ * Update humidity / battery / link quality when no temperature is present in the telegram.
+ * @param {string} room Room label from SENSOR_MAP.
+ * @param {{ humidity?: number, batteryLevel?: number, linkQuality?: number }} metrics
+ * @returns {boolean} True when any field was stored.
+ */
+function applyAuxiliaryMetrics(room, metrics) {
+    if (!Object.prototype.hasOwnProperty.call(readingsByRoom, room)) {
+        return false;
+    }
+    const { humidity, batteryLevel, linkQuality } = metrics;
+    /** @type {ZigbeeSensorReading} */
+    const next = { ...readingsByRoom[room] };
+    let changed = false;
+    if (typeof humidity === 'number' && Number.isFinite(humidity)) {
+        next.humidity = humidity;
+        changed = true;
+    }
+    if (typeof batteryLevel === 'number' && Number.isFinite(batteryLevel)) {
+        next.batteryLevel = batteryLevel;
+        changed = true;
+    }
+    if (typeof linkQuality === 'number' && Number.isFinite(linkQuality)) {
+        next.linkQuality = linkQuality;
+        changed = true;
+    }
+    if (changed) {
+        readingsByRoom[room] = next;
+    }
+    return changed;
+}
+
+/**
  * Persist a decoded reading for a mapped room.
  * @param {string} room Room label from SENSOR_MAP.
  * @param {number} temperature Temperature in °C.
  * @param {number} [humidity] Relative humidity % when known.
  * @param {number} now `Date.now()`.
- * @returns {void}
+ * @param {{ batteryLevel?: number, linkQuality?: number }} [extras] From {@link readPayloadMetrics}.
+ * @returns {boolean} True when a mapped room reading was stored.
  */
-function applyReading(room, temperature, humidity, now) {
+function applyReading(room, temperature, humidity, now, extras = {}) {
+    if (!Object.prototype.hasOwnProperty.call(readingsByRoom, room)) {
+        return false;
+    }
     /** @type {ZigbeeSensorReading} */
     const next = {
         ...readingsByRoom[room],
@@ -51,7 +111,14 @@ function applyReading(room, temperature, humidity, now) {
     if (typeof humidity === 'number' && Number.isFinite(humidity)) {
         next.humidity = humidity;
     }
+    if (typeof extras.batteryLevel === 'number' && Number.isFinite(extras.batteryLevel)) {
+        next.batteryLevel = extras.batteryLevel;
+    }
+    if (typeof extras.linkQuality === 'number' && Number.isFinite(extras.linkQuality)) {
+        next.linkQuality = extras.linkQuality;
+    }
     readingsByRoom[room] = next;
+    return true;
 }
 
 /**
@@ -172,13 +239,25 @@ function collectZbEntries(msgJson) {
 }
 
 /**
+ * Immutable snapshot of {@link readingsByRoom} for consumers (vent automation, APIs).
+ * @returns {Record<string, ZigbeeSensorReading>}
+ */
+function getReadingsSnapshot() {
+    return Object.fromEntries(
+        Object.entries(readingsByRoom).map(([k, v]) => [k, { ...v }]),
+    );
+}
+
+/**
  * Handle MQTT JSON from the Zigbee bridge.
  * @param {Record<string, unknown>} msgJson Parsed payload from Tasmota.
+ * @param {string} [topic] MQTT topic (e.g. `tele/tasmota_zigbee/SENSOR`).
  * @returns {void}
  */
-const onMessage = (msgJson) => {
+const onMessage = (msgJson, topic = '') => {
     console.log('tasmota zigbee message received.');
     const now = Date.now();
+    let didApplyTemperature = false;
 
     for (const [addrRaw, payload] of collectZbInfoEntries(msgJson)) {
         const addr = normalizeZigbeeAddress(addrRaw);
@@ -186,10 +265,17 @@ const onMessage = (msgJson) => {
         if (!room) {
             continue;
         }
+        const metrics = readPayloadMetrics(payload);
         const temp = payload.Temperature;
-        const hum = payload.Humidity;
         if (typeof temp === 'number') {
-            applyReading(room, temp, typeof hum === 'number' ? hum : undefined, now);
+            if (applyReading(room, temp, metrics.humidity, now, {
+                batteryLevel: metrics.batteryLevel,
+                linkQuality: metrics.linkQuality,
+            })) {
+                didApplyTemperature = true;
+            }
+        } else {
+            applyAuxiliaryMetrics(room, metrics);
         }
     }
 
@@ -199,7 +285,9 @@ const onMessage = (msgJson) => {
         if (parsed) {
             const room = SENSOR_MAP[parsed.addr];
             if (room) {
-                applyReading(room, parsed.temperature, parsed.humidity, now);
+                if (applyReading(room, parsed.temperature, parsed.humidity, now)) {
+                    didApplyTemperature = true;
+                }
             }
         }
     }
@@ -212,13 +300,28 @@ const onMessage = (msgJson) => {
             continue;
         }
 
+        const metrics = readPayloadMetrics(payload);
         const temp = payload.Temperature;
-        const hum = payload.Humidity;
         if (typeof temp !== 'number') {
+            applyAuxiliaryMetrics(room, metrics);
             continue;
         }
 
-        applyReading(room, temp, typeof hum === 'number' ? hum : undefined, now);
+        if (applyReading(room, temp, metrics.humidity, now, {
+            batteryLevel: metrics.batteryLevel,
+            linkQuality: metrics.linkQuality,
+        })) {
+            didApplyTemperature = true;
+        }
+    }
+
+    const topicStr = String(topic);
+    const isSensorTopic = /\/SENSOR$/i.test(topicStr);
+    const isStatResult = /\/RESULT$/i.test(topicStr) && topicStr.includes('tasmota_zigbee');
+    if (didApplyTemperature && (isSensorTopic || isStatResult)) {
+        void ventAutomation.onSensorTelegram(getReadingsSnapshot()).catch((e) => {
+            console.warn('Vent automation error:', e);
+        });
     }
 };
 
@@ -230,7 +333,7 @@ const ZB_BOOTSTRAP_INITIAL_MS = 200;
 
 /**
  * Attach this controller to the shared MQTT session (subscribe/publish prefix `tasmota_zigbee`).
- * On connect, requests cached sensor details via `ZbInfo` (one publish per short address) so GET `/tasmota-zigbee` can populate quickly.
+ * On connect, requests cached sensor details via `ZbInfo` (one publish per short address) so GET `/temperatures` can populate quickly.
  * @param {{ addDevice: (name: string, handler: (msg: Record<string, unknown>) => void, options?: { bootstrap?: (publish: (topic: string, payload?: string) => void) => void }) => void }} mqttController Application MQTT handler.
  * @returns {void}
  */
@@ -248,7 +351,7 @@ exports.attachMqtt = (mqttController) => {
 };
 
 /**
- * Return last known temperatures (and optional humidity) for all mapped sensors.
+ * Return last known temperature, humidity, battery level, and link quality for all mapped sensors.
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @returns {void}
@@ -259,3 +362,5 @@ exports.getState = (req, res) => {
         sensors: readingsByRoom,
     });
 };
+
+exports.getReadingsSnapshot = getReadingsSnapshot;

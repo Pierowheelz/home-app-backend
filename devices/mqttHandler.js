@@ -11,7 +11,7 @@ class MqttHandler{
     
     /**
      * @param {string} deviceName Topic fragment after stat/tele/cmnd (e.g. tasmota_zigbee).
-     * @param {(msgJson: Record<string, unknown>) => void} messageHandler Called for JSON payloads on matching topics.
+     * @param {(msgJson: Record<string, unknown>, topic?: string) => void} messageHandler Called for JSON payloads on matching topics.
      * @param {{ bootstrap?: (publish: (topic: string, payload?: string) => void) => void }} [options] Optional hook after subscribe (e.g. query bridge for state).
      */
     addDevice = (deviceName, messageHandler, options = {}) => {
@@ -71,7 +71,7 @@ class MqttHandler{
             // Determine where to send this message
             this.devices.forEach( (dev) => {
                 if( topic.includes(dev.name) ){
-                    dev.onMessage( msgJson );
+                    dev.onMessage( msgJson, topic );
                 }
             });
         });

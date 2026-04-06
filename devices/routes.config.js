@@ -73,8 +73,8 @@ exports.routesConfig = function (app) {
         SpeakersController.turnOff
     ]);
 
-    // Tasmota Zigbee (room temperatures)
-    app.get('/tasmota-zigbee', [
+    // Zigbee room temperatures (Tasmota bridge)
+    app.get('/temperatures', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         TasmotaZigbeeController.getState
@@ -107,6 +107,11 @@ exports.routesConfig = function (app) {
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         VentsController.getStatus
+    ]);
+    app.get('/vents/actions', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        VentsController.getActionLog
     ]);
     app.post('/vents/*/*', [
         ValidationMiddleware.validJWTNeeded,
