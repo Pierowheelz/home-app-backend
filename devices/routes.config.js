@@ -4,6 +4,7 @@ const SpeakersController = require('./controllers/speakers.controller');
 const LightsController = require('./controllers/lights.controller');
 const VentsController = require('./controllers/vents.controller');
 const ServerController = require('./controllers/server.controller');
+const TasmotaZigbeeController = require('./controllers/tasmota.zigbee.controller');
 
 const PermissionMiddleware = require('../common/middlewares/auth.permission.middleware');
 const ValidationMiddleware = require('../common/middlewares/auth.validation.middleware');
@@ -16,6 +17,7 @@ const mqttSession = new MqttHandler();
 GarageController.attachMqtt( mqttSession );
 SpeakersController.attachMqtt( mqttSession );
 ServerController.attachMqtt( mqttSession );
+TasmotaZigbeeController.attachMqtt( mqttSession );
 mqttSession.connect();
 
 exports.routesConfig = function (app) {
@@ -69,6 +71,13 @@ exports.routesConfig = function (app) {
     ]);
     app.get('/speakers/off/p7tvhtekg4942iw4tv', [
         SpeakersController.turnOff
+    ]);
+
+    // Tasmota Zigbee (room temperatures)
+    app.get('/tasmota-zigbee', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        TasmotaZigbeeController.getState
     ]);
     
     // Lights

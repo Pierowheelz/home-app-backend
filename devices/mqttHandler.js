@@ -9,13 +9,17 @@ class MqttHandler{
         
     }
     
-    addDevice = (deviceName, messageHandler) => {
-        this.devices.push(
-            {
-                name: deviceName,
-                onMessage: messageHandler
-            }
-        );
+    /**
+     * @param {string} deviceName Topic fragment after stat/tele/cmnd (e.g. tasmota_zigbee).
+     * @param {(msgJson: Record<string, unknown>) => void} messageHandler Called for JSON payloads on matching topics.
+     * @param {{ bootstrap?: (publish: (topic: string, payload?: string) => void) => void }} [options] Optional hook after subscribe (e.g. query bridge for state).
+     */
+    addDevice = (deviceName, messageHandler, options = {}) => {
+        this.devices.push({
+            name: deviceName,
+            onMessage: messageHandler,
+            bootstrap: typeof options.bootstrap === 'function' ? options.bootstrap : undefined,
+        });
     }
     
     connect = () => {
@@ -35,6 +39,14 @@ class MqttHandler{
                 this.client.subscribe( ['stat/'+dev.name+'/#','tele/'+dev.name+'/#'], (err) => {
                     if (!err) {
                         this.client.publish('cmnd/'+dev.name+'/state', '1');
+                        if (dev.bootstrap) {
+                            dev.bootstrap((topic, payload) => {
+                                this.client.publish(
+                                    topic,
+                                    payload !== undefined && payload !== null ? String(payload) : '',
+                                );
+                            });
+                        }
                     }
                 });
             });

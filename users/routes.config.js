@@ -5,7 +5,7 @@ const ValidationMiddleware = require('../common/middlewares/auth.validation.midd
 const USER = appconfig.permissionLevels.NORMAL_USER;
 
 exports.routesConfig = function (app) {
-    app.post('/users', [
+    app.post('/users', [ // Simply hashes a password and console.logs it (for manual user creation)
         UsersController.insert
     ]);
     app.get('/users', [

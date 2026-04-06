@@ -8,6 +8,7 @@ if( 'docker' == isDocker ){
     appconfig = require('./common/config/env.config.js');
 }
 const express = require('express');
+const http = require('http');
 const https = require('https');
 const bodyParser = require('body-parser');
 // const WebSocket = require('ws');
@@ -16,16 +17,6 @@ const AuthorizationRouter = require('./authorization/routes.config');
 const UsersRouter = require('./users/routes.config');
 const DevicesRouter = require('./devices/routes.config');
 // const wsPort = 80801;
-
-const hskey = fs.readFileSync( appconfig.ssl_key );
-const hscert = fs.readFileSync( appconfig.ssl_cert );
-const cacert = fs.readFileSync( appconfig.ca_cert );
-const options = {
-    key: hskey,
-    cert: hscert,
-    ca: cacert,
-    timeout: 15000
-};
 
 const app = express();
 
@@ -62,7 +53,31 @@ app.get('/*', (req, res) => {
     return;
 });
 
-const server = https.createServer(options,app);
+/**
+ * @returns {boolean} True when TLS should be used (ssl_cert is a non-empty string).
+ */
+function useTlsFromConfig() {
+    const cert = appconfig.ssl_cert;
+    return typeof cert === 'string' && cert.trim() !== '';
+}
+
+/** @type {import('http').Server | import('https').Server} */
+let server;
+if (useTlsFromConfig()) {
+    const hskey = fs.readFileSync(appconfig.ssl_key);
+    const hscert = fs.readFileSync(appconfig.ssl_cert);
+    const cacert = fs.readFileSync(appconfig.ca_cert);
+    const options = {
+        key: hskey,
+        cert: hscert,
+        ca: cacert,
+        timeout: 15000,
+    };
+    server = https.createServer(options, app);
+} else {
+    server = http.createServer(app);
+}
+
 server.listen(appconfig.port, function () {
     console.log('app listening at port %s', appconfig.port);
 });
