@@ -21,7 +21,7 @@ exports.getStatus = async (req, res) => {
 };
 
 /**
- * Action log plus live automation dashboard (temps, vents, mode).
+ * Action log plus live automation dashboard (rooms with temps and vent fields, mode).
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @returns {Promise<void>}
@@ -48,7 +48,6 @@ exports.getActionLog = async (req, res) => {
             controllerTempC: null,
             targets: null,
             rooms: [],
-            vents: [],
             lastAutomationEvaluationAt: null,
             statistics: null,
         });

@@ -12,33 +12,78 @@ NOTE: this is just the backend. Frontend is a separate repo.
 <!-- GETTING STARTED -->
 ## Getting Started
 
-Create a file common/config/env.config.js with content like the below:
-```JS
+Copy `common/config/env.config.js.sample` to `common/config/env.config.js` and adjust values, or create `common/config/env.config.js` with content like the below:
+
+```javascript
 module.exports = {
     "port": 3600,
-    "appEndpoint": "http://localhost:3600",
-    "apiEndpoint": "http://localhost:3600",
-    "ssl_cert": "/etc/letsencrypt/live/{your_domain}/cert.pem",
-    "ssl_key": "/etc/letsencrypt/live/{your_domain}/privkey.pem",
-    "jwt_secret": "myS3creT",
+    "appEndpoint": "https://example.com:3600",
+    "apiEndpoint": "https://example.com:3600",
+    "ssl_cert": "/etc/letsencrypt/live/example.com/cert.pem",
+    "ssl_key": "/etc/letsencrypt/live/example.com/privkey.pem",
+    "ca_cert": "/etc/letsencrypt/live/example.com/fullchain.pem",
+    "jwt_secret": "replace-with-a-long-random-secret",
     "jwt_expiration_in_seconds": 36000,
-    "environment": "dev",
-    "permissionLevels": {
-        "NORMAL_USER": 1
+    "ewelink_email": "john@example.com",
+    "ewelink_password": "your-ewelink-password",
+    "ewelink_region": "us",
+    "mqtt": {
+        "url": "localhost:1883",
+        "username": "",
+        "password": ""
     },
-    "users": {
+    "environment": "prod",
+    "ventAutomation": {
+        "enabled": true,
+        "coolTargetC": 23,
+        "heatTargetC": 21,
+        "roomHysteresisC": 0.5,
+        "manualOverrideMs": 3600000,
+        "stairwellRoomName": "Stairwell",
+        "ventBaseUrl": "http://192.168.2.110",
+        "ventOpenRaw": 100,
+        "ventClosedRaw": 0,
+        "roomVentMap": {
+            "Guest Room": 2,
+            "Peter's Room": 0,
+            "Burton's Room": 1
+        },
+        "actionLogRetentionMs": 172800000
+    },
+    "permissionLevels": {
+        "NORMAL_USER": 1,
+        "ADMIN_USER": 4096
+    },
+    "users": [
         {
             _id: 0,
             firstName: "John",
             lastName: "Smith",
-            email: "user@example.com",
+            email: "john@example.com",
             password: "...",
             permissionLevel: 1
         }
-    }
+    ]
 };
-
 ```
+
+### Configuration variables
+
+| Key | Purpose |
+|-----|---------|
+| `port` | HTTP(S) listen port. |
+| `appEndpoint` / `apiEndpoint` | Public base URLs used by the app (scheme, host, port). |
+| `ssl_cert` / `ssl_key` | TLS certificate and private key paths (empty strings if not using HTTPS). |
+| `ca_cert` | Optional CA / full chain path for TLS (empty if unused). |
+| `jwt_secret` / `jwt_expiration_in_seconds` | JWT signing secret and token lifetime. |
+| `ewelink_email` / `ewelink_password` / `ewelink_region` | eWeLink account credentials and API region (e.g. `us`, `eu`, `cn`, `as`, `au`). |
+| `mqtt.url` | Broker host and port (e.g. `192.168.1.1:1883`). |
+| `mqtt.username` / `mqtt.password` | Broker auth (empty if anonymous). |
+| `environment` | Runtime label (e.g. `dev`, `prod`). |
+| `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, stairwell room name, vent HTTP base URL, open/closed raw positions, room-to-vent index map, action log retention. |
+| `permissionLevels` | Numeric role flags (`NORMAL_USER`, `ADMIN_USER`). |
+| `users` | Seed users; `password` must be the server-encoded hash (see below). |
+
 The password can be generated from the "Add User" route. POST to /users with the below:
 ```JSON
 {

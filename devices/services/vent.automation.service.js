@@ -268,7 +268,7 @@ function resolveHvacMode(enabled, targets, controllerTempC) {
 }
 
 /**
- * Snapshot for dashboards: room temps, vent slots, mode, targets, and recent log stats.
+ * Snapshot for dashboards: per-room temps and optional vent fields, mode, targets, and recent log stats.
  * Refreshes vent hardware once via {@link ventClient.getVentStatus}.
  * @returns {Promise<Record<string, unknown>>}
  */
@@ -289,25 +289,8 @@ async function getAutomationDashboard() {
     await ventClient.getVentStatus();
     const ventPayload = ventClient.getCachedVentPayload();
 
-    /** @type {Array<Record<string, unknown>>} */
-    const rooms = [];
-    const roomNames = new Set([...Object.keys(merged), ...Object.keys(cfg.roomVentMap)]);
-    for (const room of roomNames) {
-        const row = merged[room] ?? { temperature: null, lastUpdateMs: null };
-        const temp = row.temperature;
-        const fromWifi = Object.prototype.hasOwnProperty.call(wifiSupplementByRoom, room);
-        rooms.push({
-            room,
-            temperatureC: typeof temp === 'number' && Number.isFinite(temp) ? temp : null,
-            humidity: typeof row.humidity === 'number' && Number.isFinite(row.humidity) ? row.humidity : null,
-            lastUpdateMs: typeof row.lastUpdateMs === 'number' ? row.lastUpdateMs : null,
-            temperatureSource: fromWifi ? 'wifi' : 'zigbee',
-        });
-    }
-    rooms.sort((a, b) => String(a.room).localeCompare(String(b.room)));
-
-    /** @type {Array<Record<string, unknown>>} */
-    const vents = [];
+    /** @type {Map<string, Record<string, unknown>>} */
+    const ventFieldsByRoom = new Map();
     for (const [roomName, motorIdRaw] of Object.entries(cfg.roomVentMap)) {
         const motorId = typeof motorIdRaw === 'number' ? motorIdRaw : Number(motorIdRaw);
         if (!Number.isFinite(motorId)) {
@@ -326,9 +309,8 @@ async function getAutomationDashboard() {
             wantOpen = roomTemp < heatRoomTarget;
         }
         const isOpen = slot !== null && slot.pos > 0;
-        vents.push({
+        ventFieldsByRoom.set(roomName, {
             motorId,
-            roomName,
             displayName: slot?.name ?? null,
             pos: slot?.pos ?? null,
             isOpen,
@@ -337,7 +319,26 @@ async function getAutomationDashboard() {
             manualOverrideUntilMs: manualOverrideActive ? until : null,
         });
     }
-    vents.sort((a, b) => Number(a.motorId) - Number(b.motorId));
+
+    /** @type {Array<Record<string, unknown>>} */
+    const rooms = [];
+    const roomNames = new Set([...Object.keys(merged), ...Object.keys(cfg.roomVentMap)]);
+    for (const room of roomNames) {
+        const row = merged[room] ?? { temperature: null, lastUpdateMs: null };
+        const temp = row.temperature;
+        const fromWifi = Object.prototype.hasOwnProperty.call(wifiSupplementByRoom, room);
+        /** @type {Record<string, unknown>} */
+        const entry = {
+            room,
+            temperatureC: typeof temp === 'number' && Number.isFinite(temp) ? temp : null,
+            humidity: typeof row.humidity === 'number' && Number.isFinite(row.humidity) ? row.humidity : null,
+            lastUpdateMs: typeof row.lastUpdateMs === 'number' ? row.lastUpdateMs : null,
+            temperatureSource: fromWifi ? 'wifi' : 'zigbee',
+        };
+        const ventExtra = ventFieldsByRoom.get(room);
+        rooms.push(ventExtra ? { ...entry, ...ventExtra } : entry);
+    }
+    rooms.sort((a, b) => String(a.room).localeCompare(String(b.room)));
 
     const MS_DAY = 86400000;
     const since = Date.now() - MS_DAY;
@@ -356,7 +357,6 @@ async function getAutomationDashboard() {
             roomHysteresisC: cfg.roomHysteresisC,
         },
         rooms,
-        vents,
         lastAutomationEvaluationAt,
         statistics: {
             actionsLast24h: last24h.length,
