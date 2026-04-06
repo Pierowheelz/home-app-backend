@@ -96,11 +96,11 @@ The password can be generated from the "Add User" route. POST to /users with the
 ```
 The terminal will display the encoded password which you can add to your "users" key in env.config.js.
 
-### Installation
+## Installation
 
 1. Clone the repo
    ```sh
-   git clone https://github.com/your_username_/Project-Name.git
+   git clone https://github.com/Pierowheelz/home-app-backend.git
    ```
 2. Install NPM packages
    ```sh
@@ -109,31 +109,56 @@ The terminal will display the encoded password which you can add to your "users"
 3. Setup `env.config.js` (see getting started)
 
 ### Docker installation
-Create directory: `/mnt/user/appdata/home-app-backend/`.
+Create a config directory somewhere: (eg. `/opt/home-app/config` or `/mnt/user/appdata/home-app-backend/` for Unraid).
 Add your env.config.js into this folder.
 Install via docker.
-Ensure /config volume was created. (create it manually if it wasn't `/config` > `/mnt/user/appdata/home-app-backend/` ).
+
+Ensure /config volume was created. (create it manually if it wasn't eg. `/config` > `/mnt/user/appdata/home-app-backend/` ).
+
+#### Raspberry Pi (32-bit ARM v7)
+
+On Raspberry Pi OS (or other `linux/arm/v7` hosts), run the image with explicit platform, TLS keys, and config bind mounts. The container listens on **3800**; the example maps host **3600** to that port (match `port` in `env.config.js`).
+
+```sh
+docker pull pierowheelz/home-app-backend:latest 
+docker run -d \
+  --name pwhomecontroller \
+  --platform linux/arm/v7 \
+  -p 3600:3800 \
+  -v /etc/letsencrypt:/keys \
+  -v /opt/home-app/config:/config \
+  --restart=unless-stopped \
+  -e NODE_VERSION="16.15.0" \
+  -e YARN_VERSION="1.22.18" \
+  pierowheelz/home-app-backend:latest
+```
+
+Adjust volume paths and `env.config.js` TLS paths as needed (for example, if certificates live under `/keys/live/example.com/` inside the container, point `ssl_*` and `ca_cert` in config accordingly).
+
+
+## Development
+Clone to your local `git clone https://github.com/Pierowheelz/home-app-backend.git`. 
+Install with `npm i`. 
+Start the server with `npm start` (note: no hot reload, so ctrl+c and restart after changes). 
 
 ### Docker builder setup
-Install Docker Desktop on PC.
+Install Docker Desktop on PC (or run this on a Linux box with `docker` installed).
 Clone repo to a folder somewhere.
 Open a terminal in that folder and run.
 ```sh
-docker buildx create --name mybuilder
-docker buildx use mybuilder
+docker buildx create --name home-app-backend
+docker buildx use home-app-backend
 docker buildx inspect --bootstrap
 ```
-Then proceed to build and push.
+Then proceed to build and deploy.
 
 Note: If not logged in to Docker Hub, run: `docker login -u pierowheelz` using Access Token generated from Docker Hub account (Account Settings > Security).
 
 
-### Docker build
-Master build is on Peter-PC at: `Documents/apps/home-app-backend`.
+### Build and deploy to Docker Hub
 
 Run:
 ```sh
-git pull
 docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t pierowheelz/home-app-backend:latest --push .
 ```
 
