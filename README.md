@@ -1,12 +1,13 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-This is a NodeJS Based home-controller project which I built in my spare time. It can interface with Mosquitto, or HTTP based home automation devices. It is designed as a boilerplate, not a ready to go system. Build in support for your own devices in devices/controllers.
-NOTE: this is just the backend. Frontend is a separate repo.
+This is a NodeJS Based home-controller API which I built in my spare time. It can interface with Mosquitto, or HTTP based home automation devices. It is designed as a boilerplate, not a ready to go system. Build in support for your own devices in devices/controllers.
+NOTE: this is just the backend API. Frontend is a separate repo.
 
 ### Built With
 
-* [NodeJS](https://getbootstrap.com)
+* NodeJS
+* Docker
 
 
 <!-- GETTING STARTED -->
