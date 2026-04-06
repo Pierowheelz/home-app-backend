@@ -14,7 +14,9 @@ const ventAutomation = require('../services/vent.automation.service');
 const SENSOR_MAP = {
     '0x954D': 'Guest Room',
     '0xD7D5': 'Stairwell',
+    '0x9BBA': 'Stairwell (alt)',
     '0xA33F': 'Peter\'s Room',
+    '0x8728': 'Peter\'s Room (alt)',
     '0x2047': 'Burton\'s Room',
 };
 

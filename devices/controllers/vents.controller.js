@@ -21,11 +21,75 @@ exports.getStatus = async (req, res) => {
 };
 
 /**
- * Action log plus live automation dashboard (rooms with temps and vent fields, mode).
+ * POST JSON `{ room, targetC }` — set per-room comfort target (20h), or `{ room, cancel: true }` to clear it.
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @returns {Promise<void>}
  */
+exports.setRoomTarget = async (req, res) => {
+    const body = req.body !== null && typeof req.body === 'object' ? req.body : {};
+    const roomRaw = body.room;
+    const room = typeof roomRaw === 'string' ? roomRaw.trim() : '';
+    const cancel = body.cancel === true;
+
+    if (cancel) {
+        if (room === '') {
+            res.status(400).send({ success: false, error: 'invalid_body' });
+            return;
+        }
+        const cleared = ventAutomation.clearRoomTargetTemperatureOverride(room);
+        if (!cleared.ok) {
+            const code = cleared.error === 'unknown_room' ? 404 : 400;
+            res.status(code).send({ success: false, error: cleared.error });
+            return;
+        }
+        try {
+            await ventAutomation.runAutomationTickFromSnapshot();
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn('setRoomTarget (cancel) automation tick failed', msg);
+        }
+        res.status(200).send({
+            success: true,
+            error: '',
+            room,
+            cancel: true,
+            hadActiveOverride: cleared.hadActiveOverride,
+        });
+        return;
+    }
+
+    const targetRaw = body.targetC;
+    const targetC = typeof targetRaw === 'number' ? targetRaw : Number.NaN;
+    if (room === '' || !Number.isFinite(targetC)) {
+        res.status(400).send({ success: false, error: 'invalid_body' });
+        return;
+    }
+    if (targetC < 5 || targetC > 35) {
+        res.status(400).send({ success: false, error: 'targetC_out_of_range' });
+        return;
+    }
+    const result = ventAutomation.setRoomTargetTemperatureTemporary(room, targetC);
+    if (!result.ok) {
+        const code = result.error === 'unknown_room' ? 404 : 400;
+        res.status(code).send({ success: false, error: result.error });
+        return;
+    }
+    try {
+        await ventAutomation.runAutomationTickFromSnapshot();
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('setRoomTarget automation tick failed', msg);
+    }
+    res.status(200).send({
+        success: true,
+        error: '',
+        room,
+        targetC,
+        untilMs: result.untilMs,
+    });
+};
+
 exports.getActionLog = async (req, res) => {
     try {
         const dashboard = await ventAutomation.getAutomationDashboard();

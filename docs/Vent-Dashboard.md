@@ -1,6 +1,6 @@
 # Vent system — dashboard implementation guide
 
-This document describes how the backend talks to the **vent hardware**, how **automation** and the **action log** work, and how to use the HTTP API to build a **status / control dashboard**. For generic auth and base URL details, see [API.md](./API.md).
+This document describes how the backend talks to the **vent hardware**, how **automation** and the **action log** work, and how to use the HTTP API to build a **status / control dashboard**. For generic auth and base URL details, see [API.md](./API.md). For **per-room temporary target temperatures** (set/cancel API and extra dashboard fields), see [Vent-Room-Target-API.md](./Vent-Room-Target-API.md).
 
 ## Architecture (high level)
 
@@ -38,7 +38,8 @@ All routes require a JWT with normal user permission (see [API.md](./API.md)).
 | Method | Path | Purpose |
 |--------|------|--------|
 | `GET` | `/vents` | Last **cached** raw payload from the vent device (no forced refresh). |
-| `GET` | `/vents/actions` | **Refreshes** vent status once, then returns **dashboard** + **action log**. |
+| `GET` | `/vents/actions` | **Refreshes** vent status once, then returns **dashboard** + **action log** (includes optional per-room target override fields on vent-mapped rows; see [Vent-Room-Target-API.md](./Vent-Room-Target-API.md)). |
+| `POST` | `/vents/room-target` | JSON: set a **temporary (20h) per-room comfort target** for a `roomVentMap` key, or `{ room, cancel: true }` to clear. |
 | `POST` | `/vents/:motorId/:percent` | Set motor `motorId` to `percent` (0–100). Starts a **manual override** window so automation does not fight the user. |
 
 ### When to call which endpoint
@@ -159,6 +160,8 @@ Each element combines **sensor** data with optional **vent** fields for rooms in
 | `wantOpen` | boolean \| null | Automation desire in current mode; `null` if mode idle/disabled/unknown or no room temp. |
 | `manualOverrideActive` | boolean | True while manual override window is active for this motor. |
 | `manualOverrideUntilMs` | number \| null | Epoch ms override expires; `null` if inactive. |
+| `roomTargetOverrideC` | number \| null | When present: active **automation** comfort override (°C) for this vent-mapped room; `null` if none. See [Vent-Room-Target-API.md](./Vent-Room-Target-API.md). |
+| `roomTargetOverrideUntilMs` | number \| null | When present: epoch ms when that override expires; `null` if inactive. |
 
 Rows are sorted by **`room`** alphabetically. The union of all Zigbee rooms and all `roomVentMap` keys appears, so you may show rooms without vents or vents waiting for first temperature.
 

@@ -113,6 +113,11 @@ exports.routesConfig = function (app) {
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         VentsController.getActionLog
     ]);
+    app.post('/vents/room-target', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        VentsController.setRoomTarget
+    ]);
     app.post('/vents/*/*', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),

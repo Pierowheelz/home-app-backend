@@ -10,6 +10,38 @@ const wifiSupplementByRoom = {};
 /** Epoch ms when {@link evaluateAndAct} last ran while automation was enabled. */
 let lastAutomationEvaluationAt = /** @type {number|null} */ (null);
 
+/**
+ * Last controller band mode from {@link evaluateAndAct} (used to drop room target overrides on cooling ↔ heating).
+ * @type {'cooling'|'heating'|'idle'|null}
+ */
+let lastVentAutomationHvacMode = null;
+
+/** How long {@link setRoomTargetTemperatureTemporary} keeps a per-room target active. */
+const ROOM_TARGET_OVERRIDE_DURATION_MS = 20 * 60 * 60 * 1000;
+
+/** @type {Record<string, { targetC: number, untilMs: number }>} */
+const roomTargetOverrideByRoom = {};
+
+/** Redundant Zigbee sensors: logical room → alternate device row in {@link mergeSensors} / Zigbee snapshot. */
+const REDUNDANT_ALT_ROOM_BY_PRIMARY = /** @type {Record<string, string>} */ ({
+    Stairwell: 'Stairwell (alt)',
+    "Peter's Room": 'Peter\'s Room (alt)',
+});
+
+/** Ignore alternate sensor row keys when listing dashboard rooms (values are folded into the primary room). */
+const REDUNDANT_ALT_ROOM_LABELS = new Set(Object.values(REDUNDANT_ALT_ROOM_BY_PRIMARY));
+
+/** Stale-after: if no temperature telegram within this window, redundant pair member is excluded from averaging. */
+const REDUNDANT_SENSOR_OFFLINE_MS = 30 * 60 * 1000;
+
+/**
+ * @param {number} n
+ * @returns {number}
+ */
+function roundToOneDecimal(n) {
+    return Math.round(n * 10) / 10;
+}
+
 const DEFAULTS = {
     enabled: true,
     coolTargetC: 23,
@@ -109,6 +141,119 @@ function mergeSensors(zigbeeSensors) {
 }
 
 /**
+ * @param {{ temperature?: number|null, lastUpdateMs?: number|null }} row
+ * @param {number} nowMs
+ * @returns {boolean}
+ */
+function isRedundantSensorOnline(row, nowMs) {
+    if (row === null || typeof row !== 'object') {
+        return false;
+    }
+    const t = row.temperature;
+    const lu = row.lastUpdateMs;
+    if (typeof t !== 'number' || !Number.isFinite(t)) {
+        return false;
+    }
+    if (typeof lu !== 'number' || !Number.isFinite(lu)) {
+        return false;
+    }
+    return nowMs - lu <= REDUNDANT_SENSOR_OFFLINE_MS;
+}
+
+/**
+ * Average temperature/humidity for a redundant pair when both are online; otherwise the sole online sensor.
+ * @param {{ temperature?: number|null, lastUpdateMs?: number|null, humidity?: number|null }} primaryRow
+ * @param {{ temperature?: number|null, lastUpdateMs?: number|null, humidity?: number|null }} altRow
+ * @param {number} nowMs
+ * @returns {{ temperature: number|null, humidity: number|null, lastUpdateMs: number|null }}
+ */
+function combineRedundantRoomReadings(primaryRow, altRow, nowMs) {
+    const p = primaryRow && typeof primaryRow === 'object' ? primaryRow : {};
+    const a = altRow && typeof altRow === 'object' ? altRow : {};
+    const pOnline = isRedundantSensorOnline(p, nowMs);
+    const aOnline = isRedundantSensorOnline(a, nowMs);
+
+    /** @type {number|null} */
+    let temperature = null;
+    /** @type {number|null} */
+    let humidity = null;
+    /** @type {number|null} */
+    let lastUpdateMs = null;
+
+    if (pOnline && aOnline) {
+        const pt = p.temperature;
+        const at = a.temperature;
+        if (typeof pt === 'number' && Number.isFinite(pt) && typeof at === 'number' && Number.isFinite(at)) {
+            temperature = roundToOneDecimal((pt + at) / 2);
+        }
+        const ph = typeof p.humidity === 'number' && Number.isFinite(p.humidity) ? p.humidity : null;
+        const ah = typeof a.humidity === 'number' && Number.isFinite(a.humidity) ? a.humidity : null;
+        if (ph !== null && ah !== null) {
+            humidity = roundToOneDecimal((ph + ah) / 2);
+        } else if (ph !== null) {
+            humidity = ph;
+        } else if (ah !== null) {
+            humidity = ah;
+        }
+        const plu = typeof p.lastUpdateMs === 'number' ? p.lastUpdateMs : 0;
+        const alu = typeof a.lastUpdateMs === 'number' ? a.lastUpdateMs : 0;
+        lastUpdateMs = Math.max(plu, alu);
+    } else if (pOnline) {
+        temperature = typeof p.temperature === 'number' && Number.isFinite(p.temperature) ? p.temperature : null;
+        humidity = typeof p.humidity === 'number' && Number.isFinite(p.humidity) ? p.humidity : null;
+        lastUpdateMs = typeof p.lastUpdateMs === 'number' ? p.lastUpdateMs : null;
+    } else if (aOnline) {
+        temperature = typeof a.temperature === 'number' && Number.isFinite(a.temperature) ? a.temperature : null;
+        humidity = typeof a.humidity === 'number' && Number.isFinite(a.humidity) ? a.humidity : null;
+        lastUpdateMs = typeof a.lastUpdateMs === 'number' ? a.lastUpdateMs : null;
+    }
+
+    return { temperature, humidity, lastUpdateMs };
+}
+
+/**
+ * Replace primary room rows with averaged (or fallback) readings when a redundant alt sensor exists.
+ * @param {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} sensorsByRoom
+ * @returns {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>}
+ */
+function applyRedundancyMerge(sensorsByRoom) {
+    const nowMs = Date.now();
+    /** @type {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} */
+    const out = { ...sensorsByRoom };
+
+    for (const [primary, alt] of Object.entries(REDUNDANT_ALT_ROOM_BY_PRIMARY)) {
+        const primaryRow = sensorsByRoom[primary] ?? { temperature: null, lastUpdateMs: null, humidity: null };
+        const altRow = sensorsByRoom[alt] ?? { temperature: null, lastUpdateMs: null, humidity: null };
+        const c = combineRedundantRoomReadings(primaryRow, altRow, nowMs);
+        out[primary] = {
+            ...primaryRow,
+            temperature: c.temperature,
+            humidity: c.humidity,
+            lastUpdateMs: c.lastUpdateMs,
+        };
+    }
+    return out;
+}
+
+/**
+ * @param {{ temperature?: number|null, lastUpdateMs?: number|null, humidity?: number|null }|undefined} row
+ * @returns {{ temperatureC: number|null, humidity: number|null, lastUpdateMs: number|null }}
+ */
+function sensorRowToDashboardFields(row) {
+    if (!row || typeof row !== 'object') {
+        return { temperatureC: null, humidity: null, lastUpdateMs: null };
+    }
+    const t = row.temperature;
+    const h = row.humidity;
+    const lu = row.lastUpdateMs;
+    return {
+        temperatureC: typeof t === 'number' && Number.isFinite(t) ? t : null,
+        humidity: typeof h === 'number' && Number.isFinite(h) ? h : null,
+        lastUpdateMs: typeof lu === 'number' ? lu : null,
+    };
+}
+
+/**
  * @param {number|string} motorId
  * @returns {boolean}
  */
@@ -127,6 +272,117 @@ function recordManualOverride(motorId) {
 }
 
 /**
+ * Per-room comfort target for vent open/close (same semantics as global `coolTargetC`/`heatTargetC` for that room only).
+ * @param {string} room
+ * @param {number} nowMs
+ * @param {{ coolTargetC: number, heatTargetC: number }} globalTargets
+ * @returns {{ coolTargetC: number, heatTargetC: number }}
+ */
+function effectiveRoomBandTargets(room, nowMs, globalTargets) {
+    const o = roomTargetOverrideByRoom[room];
+    if (
+        o
+        && typeof o.targetC === 'number'
+        && Number.isFinite(o.targetC)
+        && typeof o.untilMs === 'number'
+        && Number.isFinite(o.untilMs)
+        && nowMs < o.untilMs
+    ) {
+        return { coolTargetC: o.targetC, heatTargetC: o.targetC };
+    }
+    return globalTargets;
+}
+
+/**
+ * Set a single room's target temperature for the next ~20 hours (vent automation only).
+ * @param {string} room Room key matching `roomVentMap`.
+ * @param {number} targetC Target temperature (°C).
+ * @returns {{ ok: true, untilMs: number } | { ok: false, error: string }}
+ */
+function setRoomTargetTemperatureTemporary(room, targetC) {
+    if (typeof room !== 'string' || room.trim() === '') {
+        return { ok: false, error: 'invalid_room' };
+    }
+    if (typeof targetC !== 'number' || !Number.isFinite(targetC)) {
+        return { ok: false, error: 'invalid_targetC' };
+    }
+    const cfg = getVentAutomationConfig();
+    if (!Object.prototype.hasOwnProperty.call(cfg.roomVentMap, room)) {
+        return { ok: false, error: 'unknown_room' };
+    }
+    const untilMs = Date.now() + ROOM_TARGET_OVERRIDE_DURATION_MS;
+    roomTargetOverrideByRoom[room] = { targetC, untilMs };
+    return { ok: true, untilMs };
+}
+
+/**
+ * Drop any stored per-room target for `room` so global band targets apply again.
+ * @param {string} room Room key matching `roomVentMap`.
+ * @returns {{ ok: true, hadActiveOverride: boolean } | { ok: false, error: string }}
+ */
+function clearRoomTargetTemperatureOverride(room) {
+    if (typeof room !== 'string' || room.trim() === '') {
+        return { ok: false, error: 'invalid_room' };
+    }
+    const trimmed = room.trim();
+    const cfg = getVentAutomationConfig();
+    if (!Object.prototype.hasOwnProperty.call(cfg.roomVentMap, trimmed)) {
+        return { ok: false, error: 'unknown_room' };
+    }
+    const hadActiveOverride = getRoomTargetOverride(trimmed) !== null;
+    delete roomTargetOverrideByRoom[trimmed];
+    return { ok: true, hadActiveOverride };
+}
+
+/**
+ * @param {string} room
+ * @param {number} [nowMs]
+ * @returns {{ targetC: number, untilMs: number }|null}
+ */
+function getRoomTargetOverride(room, nowMs = Date.now()) {
+    const o = roomTargetOverrideByRoom[room];
+    if (
+        !o
+        || typeof o.targetC !== 'number'
+        || !Number.isFinite(o.targetC)
+        || typeof o.untilMs !== 'number'
+        || !Number.isFinite(o.untilMs)
+    ) {
+        return null;
+    }
+    if (nowMs >= o.untilMs) {
+        return null;
+    }
+    return { targetC: o.targetC, untilMs: o.untilMs };
+}
+
+/**
+ * Controller-room band mode (matches {@link resolveHvacMode} for a known temperature).
+ * @param {number} stairTempC
+ * @param {number} heatTargetC
+ * @param {number} coolTargetC
+ * @returns {'cooling'|'heating'|'idle'}
+ */
+function resolveVentAutomationHvacMode(stairTempC, heatTargetC, coolTargetC) {
+    if (stairTempC >= heatTargetC && stairTempC <= coolTargetC) {
+        return 'idle';
+    }
+    if (stairTempC > coolTargetC) {
+        return 'cooling';
+    }
+    return 'heating';
+}
+
+/**
+ * @returns {void}
+ */
+function clearAllRoomTargetOverrides() {
+    for (const key of Object.keys(roomTargetOverrideByRoom)) {
+        delete roomTargetOverrideByRoom[key];
+    }
+}
+
+/**
  * @param {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} sensorsByRoom
  * @returns {Promise<void>}
  */
@@ -136,12 +392,8 @@ async function evaluateAndAct(sensorsByRoom) {
         return;
     }
     lastAutomationEvaluationAt = Date.now();
-    const roomVentMap = cfg.roomVentMap;
-    if (!roomVentMap || typeof roomVentMap !== 'object' || Object.keys(roomVentMap).length === 0) {
-        return;
-    }
 
-    const merged = mergeSensors(sensorsByRoom);
+    const merged = applyRedundancyMerge(mergeSensors(sensorsByRoom));
     const stairName = cfg.controllerRoomName;
     const stairRow = merged[stairName];
     const stairTemp = stairRow && typeof stairRow.temperature === 'number' ? stairRow.temperature : null;
@@ -150,15 +402,27 @@ async function evaluateAndAct(sensorsByRoom) {
     }
 
     const { coolTargetC, heatTargetC, roomHysteresisC } = cfg;
-    if (stairTemp >= heatTargetC && stairTemp <= coolTargetC) {
+    const currHvacMode = resolveVentAutomationHvacMode(stairTemp, heatTargetC, coolTargetC);
+    const prevHvacMode = lastVentAutomationHvacMode;
+    if (
+        (prevHvacMode === 'cooling' && currHvacMode === 'heating')
+        || (prevHvacMode === 'heating' && currHvacMode === 'cooling')
+    ) {
+        clearAllRoomTargetOverrides();
+    }
+    lastVentAutomationHvacMode = currHvacMode;
+
+    const roomVentMap = cfg.roomVentMap;
+    if (!roomVentMap || typeof roomVentMap !== 'object' || Object.keys(roomVentMap).length === 0) {
         return;
     }
 
-    const cooling = stairTemp > coolTargetC;
-    const heating = stairTemp < heatTargetC;
-    if (!cooling && !heating) {
+    if (currHvacMode === 'idle') {
         return;
     }
+
+    const cooling = currHvacMode === 'cooling';
+    const heating = currHvacMode === 'heating';
 
     const ventPayload = await ventClient.getVentStatus();
     if (!ventPayload || typeof ventPayload !== 'object') {
@@ -166,8 +430,7 @@ async function evaluateAndAct(sensorsByRoom) {
         return;
     }
 
-    const coolRoomTarget = coolTargetC - roomHysteresisC;
-    const heatRoomTarget = heatTargetC + roomHysteresisC;
+    const nowTick = Date.now();
 
     for (const [roomName, motorIdRaw] of Object.entries(roomVentMap)) {
         if (roomName === stairName) {
@@ -186,6 +449,10 @@ async function evaluateAndAct(sensorsByRoom) {
         if (roomTemp === null || !Number.isFinite(roomTemp)) {
             continue;
         }
+
+        const eff = effectiveRoomBandTargets(roomName, nowTick, { coolTargetC, heatTargetC });
+        const coolRoomTarget = eff.coolTargetC - roomHysteresisC;
+        const heatRoomTarget = eff.heatTargetC + roomHysteresisC;
 
         let wantOpen = false;
         if (cooling) {
@@ -244,6 +511,14 @@ async function onSensorTelegram(sensorsByRoom) {
 }
 
 /**
+ * Run one automation evaluation from the current Zigbee snapshot (e.g. after config or room target change).
+ * @returns {Promise<void>}
+ */
+async function runAutomationTickFromSnapshot() {
+    await evaluateAndAct(getReadingsSnapshotFromZigbee());
+}
+
+/**
  * Resolve HVAC mode from controller room temperature and config.
  * @param {boolean} enabled
  * @param {number|null} controllerTempC
@@ -274,7 +549,8 @@ function resolveHvacMode(enabled, targets, controllerTempC) {
  */
 async function getAutomationDashboard() {
     const cfg = getVentAutomationConfig();
-    const merged = mergeSensors(getReadingsSnapshotFromZigbee());
+    const rawMerged = mergeSensors(getReadingsSnapshotFromZigbee());
+    const merged = applyRedundancyMerge(rawMerged);
     const stairName = cfg.controllerRoomName;
     const stairRow = merged[stairName];
     const controllerTempC = stairRow && typeof stairRow.temperature === 'number' && Number.isFinite(stairRow.temperature)
@@ -283,8 +559,7 @@ async function getAutomationDashboard() {
 
     const mode = resolveHvacMode(cfg.enabled, { coolTargetC: cfg.coolTargetC, heatTargetC: cfg.heatTargetC }, controllerTempC);
 
-    const coolRoomTarget = cfg.coolTargetC - cfg.roomHysteresisC;
-    const heatRoomTarget = cfg.heatTargetC + cfg.roomHysteresisC;
+    const nowDash = Date.now();
 
     await ventClient.getVentStatus();
     const ventPayload = ventClient.getCachedVentPayload();
@@ -302,6 +577,9 @@ async function getAutomationDashboard() {
         const slot = ventClient.readMotorSlot(ventPayload, motorId);
         const row = merged[roomName];
         const roomTemp = row && typeof row.temperature === 'number' ? row.temperature : null;
+        const eff = effectiveRoomBandTargets(roomName, nowDash, { coolTargetC: cfg.coolTargetC, heatTargetC: cfg.heatTargetC });
+        const coolRoomTarget = eff.coolTargetC - cfg.roomHysteresisC;
+        const heatRoomTarget = eff.heatTargetC + cfg.roomHysteresisC;
         let wantOpen = null;
         if (mode === 'cooling' && roomTemp !== null && Number.isFinite(roomTemp)) {
             wantOpen = roomTemp > coolRoomTarget;
@@ -309,6 +587,7 @@ async function getAutomationDashboard() {
             wantOpen = roomTemp < heatRoomTarget;
         }
         const isOpen = slot !== null && slot.pos > 0;
+        const rtOverride = getRoomTargetOverride(roomName, nowDash);
         ventFieldsByRoom.set(roomName, {
             motorId,
             displayName: slot?.name ?? null,
@@ -317,6 +596,8 @@ async function getAutomationDashboard() {
             wantOpen,
             manualOverrideActive,
             manualOverrideUntilMs: manualOverrideActive ? until : null,
+            roomTargetOverrideC: rtOverride?.targetC ?? null,
+            roomTargetOverrideUntilMs: rtOverride?.untilMs ?? null,
         });
     }
 
@@ -324,6 +605,9 @@ async function getAutomationDashboard() {
     const rooms = [];
     const roomNames = new Set([...Object.keys(merged), ...Object.keys(cfg.roomVentMap)]);
     for (const room of roomNames) {
+        if (REDUNDANT_ALT_ROOM_LABELS.has(room)) {
+            continue;
+        }
         const row = merged[room] ?? { temperature: null, lastUpdateMs: null };
         const temp = row.temperature;
         const fromWifi = Object.prototype.hasOwnProperty.call(wifiSupplementByRoom, room);
@@ -335,6 +619,17 @@ async function getAutomationDashboard() {
             lastUpdateMs: typeof row.lastUpdateMs === 'number' ? row.lastUpdateMs : null,
             temperatureSource: fromWifi ? 'wifi' : 'zigbee',
         };
+        const altLabel = REDUNDANT_ALT_ROOM_BY_PRIMARY[room];
+        if (altLabel) {
+            const pRaw = sensorRowToDashboardFields(rawMerged[room]);
+            const aRaw = sensorRowToDashboardFields(rawMerged[altLabel]);
+            entry.sensorPrimaryTemperatureC = pRaw.temperatureC;
+            entry.sensorAltTemperatureC = aRaw.temperatureC;
+            entry.sensorPrimaryHumidity = pRaw.humidity;
+            entry.sensorAltHumidity = aRaw.humidity;
+            entry.sensorPrimaryLastUpdateMs = pRaw.lastUpdateMs;
+            entry.sensorAltLastUpdateMs = aRaw.lastUpdateMs;
+        }
         const ventExtra = ventFieldsByRoom.get(room);
         rooms.push(ventExtra ? { ...entry, ...ventExtra } : entry);
     }
@@ -391,4 +686,7 @@ module.exports = {
     onSensorTelegram,
     ingestRoomReading,
     getAutomationDashboard,
+    setRoomTargetTemperatureTemporary,
+    clearRoomTargetTemperatureOverride,
+    runAutomationTickFromSnapshot,
 };
