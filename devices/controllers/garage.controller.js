@@ -8,10 +8,8 @@ let currentState = 'unknown';
  */
 const onMessage = ( msgJson ) => {
     console.log('garage message received.');
-    const openSwitchReading =
-        msgJson.Switch2 ?? msgJson.POWER2 ?? null;
-    const closedSwitchReading =
-        msgJson.Switch3 ?? msgJson.POWER3 ?? null;
+    const openSwitchReading = msgJson.POWER2 ?? null; // NOTE: Switch2 is unreliable (always ON)
+    const closedSwitchReading = msgJson.POWER3 ?? null; // NOTE: Switch3 is unreliable (always ON)
     
     if( null === openSwitchReading && null === closedSwitchReading ){
         console.log('Door state unknown.');
@@ -25,7 +23,6 @@ const onMessage = ( msgJson ) => {
         currentState = 'closed';
     } else {
         currentState = 'middle';
-        //currentState = 'closed'; // Closed switch not yet implemented
     }
 };
 
