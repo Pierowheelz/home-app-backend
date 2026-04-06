@@ -10,15 +10,17 @@ const ventAutomation = require('../services/vent.automation.service');
  * we decode temp/humidity in centi-units (LE uint16/int16) so readings still update.
  */
 
-/** @type {Record<string, string>} Normalized Zigbee address (e.g. 0x954D) → room label */
-const SENSOR_MAP = {
-    '0x954D': 'Guest Room',
-    '0xD7D5': 'Stairwell',
-    '0x9BBA': 'Stairwell (alt)',
-    '0xA33F': 'Peter\'s Room',
-    '0x8728': 'Peter\'s Room (alt)',
-    '0x2047': 'Burton\'s Room',
-};
+/**
+ * Normalized Zigbee address (e.g. `0x954D`) → room label from `appconfig.ventAutomation.zigbeeSensorMap`.
+ * @returns {Record<string, string>}
+ */
+function getZigbeeSensorMap() {
+    const m = appconfig?.ventAutomation?.zigbeeSensorMap;
+    if (m !== null && typeof m === 'object' && !Array.isArray(m)) {
+        return /** @type {Record<string, string>} */ (m);
+    }
+    return {};
+}
 
 /**
  * @typedef {Object} ZigbeeSensorReading
@@ -32,7 +34,7 @@ const SENSOR_MAP = {
 /** @type {Record<string, ZigbeeSensorReading>} Room label → last reading */
 const readingsByRoom = {};
 
-Object.values(SENSOR_MAP).forEach((room) => {
+Object.values(getZigbeeSensorMap()).forEach((room) => {
     readingsByRoom[room] = { temperature: null, lastUpdateMs: null };
 });
 
@@ -61,7 +63,7 @@ function readPayloadMetrics(payload) {
 
 /**
  * Update humidity / battery / link quality when no temperature is present in the telegram.
- * @param {string} room Room label from SENSOR_MAP.
+ * @param {string} room Room label from configured zigbeeSensorMap.
  * @param {{ humidity?: number, batteryLevel?: number, linkQuality?: number }} metrics
  * @returns {boolean} True when any field was stored.
  */
@@ -93,7 +95,7 @@ function applyAuxiliaryMetrics(room, metrics) {
 
 /**
  * Persist a decoded reading for a mapped room.
- * @param {string} room Room label from SENSOR_MAP.
+ * @param {string} room Room label from configured zigbeeSensorMap.
  * @param {number} temperature Temperature in °C.
  * @param {number} [humidity] Relative humidity % when known.
  * @param {number} now `Date.now()`.
@@ -231,7 +233,7 @@ function collectZbEntries(msgJson) {
     }
     /** @type {Array<[string, Record<string, unknown>]>} */
     const out = [];
-    for (const addr of Object.keys(SENSOR_MAP)) {
+    for (const addr of Object.keys(getZigbeeSensorMap())) {
         const payload = msgJson[addr];
         if (payload !== null && typeof payload === 'object' && !Array.isArray(payload)) {
             out.push([addr, /** @type {Record<string, unknown>} */ (payload)]);
@@ -263,7 +265,7 @@ const onMessage = (msgJson, topic = '') => {
 
     for (const [addrRaw, payload] of collectZbInfoEntries(msgJson)) {
         const addr = normalizeZigbeeAddress(addrRaw);
-        const room = SENSOR_MAP[addr];
+        const room = getZigbeeSensorMap()[addr];
         if (!room) {
             continue;
         }
@@ -285,7 +287,7 @@ const onMessage = (msgJson, topic = '') => {
     if (typeof zbDataField === 'string') {
         const parsed = parseZbDataLine(zbDataField);
         if (parsed) {
-            const room = SENSOR_MAP[parsed.addr];
+            const room = getZigbeeSensorMap()[parsed.addr];
             if (room) {
                 if (applyReading(room, parsed.temperature, parsed.humidity, now)) {
                     didApplyTemperature = true;
@@ -297,7 +299,7 @@ const onMessage = (msgJson, topic = '') => {
     const entries = collectZbEntries(msgJson);
     for (const [addrRaw, payload] of entries) {
         const addr = normalizeZigbeeAddress(addrRaw);
-        const room = SENSOR_MAP[addr];
+        const room = getZigbeeSensorMap()[addr];
         if (!room || payload === null || typeof payload !== 'object') {
             continue;
         }
@@ -342,7 +344,7 @@ const ZB_BOOTSTRAP_INITIAL_MS = 200;
 exports.attachMqtt = (mqttController) => {
     mqttController.addDevice('tasmota_zigbee', onMessage, {
         bootstrap: (publish) => {
-            const addrs = Object.keys(SENSOR_MAP);
+            const addrs = Object.keys(getZigbeeSensorMap());
             addrs.forEach((addr, i) => {
                 setTimeout(() => {
                     publish('cmnd/tasmota_zigbee/ZbInfo', addr);

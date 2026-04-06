@@ -17,7 +17,7 @@ This document is for **frontend / app** authors integrating the **temporary per-
 Behavior (server-side, good for UI tooltips):
 
 - Overrides apply **only** to rooms that are keys in **`ventAutomation.roomVentMap`** (same strings Zigbee / dashboard use).
-- A **set** lasts **20 hours** from the successful request (`untilMs` in the response).
+- A **set** lasts **`ventAutomation.roomTargetOverrideDurationMs`** (default **20 hours**) from the successful request (`untilMs` in the response).
 - Overrides are stored **in memory**; a **process restart** clears them.
 - The server **clears every room override** when automation observes a direct transition **cooling ↔ heating** (based on the **controller room** temperature and global `coolTargetC` / `heatTargetC`). Transitions **to or from `idle`** do **not** clear overrides.
 - While an override is active for a room, **vent open/close decisions** for that room use the override as both band edges (see semantics below); **global** `targets` in the dashboard still show the config defaults.
@@ -45,7 +45,7 @@ Behavior (server-side, good for UI tooltips):
 | `error` | `""` | |
 | `room` | string | Same as request (trimmed). |
 | `targetC` | number | Echo of accepted value. |
-| `untilMs` | number | Epoch ms when the override expires (set time + 20 hours). |
+| `untilMs` | number | Epoch ms when the override expires (set time + `roomTargetOverrideDurationMs` from vent config). |
 
 **Error responses:**
 

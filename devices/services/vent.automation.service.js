@@ -16,20 +16,42 @@ let lastAutomationEvaluationAt = /** @type {number|null} */ (null);
  */
 let lastVentAutomationHvacMode = null;
 
-/** How long {@link setRoomTargetTemperatureTemporary} keeps a per-room target active. */
-const ROOM_TARGET_OVERRIDE_DURATION_MS = 20 * 60 * 60 * 1000;
-
 /** @type {Record<string, { targetC: number, untilMs: number }>} */
 const roomTargetOverrideByRoom = {};
 
-/** Redundant Zigbee sensors: logical room → alternate device row in {@link mergeSensors} / Zigbee snapshot. */
-const REDUNDANT_ALT_ROOM_BY_PRIMARY = /** @type {Record<string, string>} */ ({
-    Stairwell: 'Stairwell (alt)',
-    "Peter's Room": 'Peter\'s Room (alt)',
-});
+/**
+ * Redundant Zigbee alt rows use the primary room name plus this suffix (see {@link isRedundantAltSensorLabel}).
+ * @type {string}
+ */
+const REDUNDANT_ALT_SENSOR_SUFFIX = ' (alt)';
 
-/** Ignore alternate sensor row keys when listing dashboard rooms (values are folded into the primary room). */
-const REDUNDANT_ALT_ROOM_LABELS = new Set(Object.values(REDUNDANT_ALT_ROOM_BY_PRIMARY));
+/**
+ * @param {string} roomRowKey
+ * @returns {boolean}
+ */
+function isRedundantAltSensorLabel(roomRowKey) {
+    return typeof roomRowKey === 'string' && / \(alt\)$/.test(roomRowKey);
+}
+
+/**
+ * @param {string} altRowKey
+ * @returns {string|null} Primary room label, or null if `altRowKey` does not match `/^(.+) \(alt\)$/`.
+ */
+function primaryRoomFromRedundantAltLabel(altRowKey) {
+    if (typeof altRowKey !== 'string') {
+        return null;
+    }
+    const m = /^(.*) \(alt\)$/.exec(altRowKey);
+    return m !== null && m[1].length > 0 ? m[1] : null;
+}
+
+/**
+ * @param {string} primaryRoom
+ * @returns {string}
+ */
+function redundantAltLabelForPrimaryRoom(primaryRoom) {
+    return primaryRoom + REDUNDANT_ALT_SENSOR_SUFFIX;
+}
 
 /** Stale-after: if no temperature telegram within this window, redundant pair member is excluded from averaging. */
 const REDUNDANT_SENSOR_OFFLINE_MS = 30 * 60 * 1000;
@@ -48,6 +70,8 @@ const DEFAULTS = {
     heatTargetC: 21,
     roomHysteresisC: 0.5,
     manualOverrideMs: 3600000,
+    /** How long {@link setRoomTargetTemperatureTemporary} keeps a per-room target active. */
+    roomTargetOverrideDurationMs: 20 * 60 * 60 * 1000,
     controllerRoomName: 'Stairwell',
     ventOpenRaw: 100,
     ventClosedRaw: 0,
@@ -85,11 +109,17 @@ function getVentAutomationConfig() {
         manualOverrideMs: typeof r.manualOverrideMs === 'number' && Number.isFinite(r.manualOverrideMs) && r.manualOverrideMs >= 0
             ? r.manualOverrideMs
             : DEFAULTS.manualOverrideMs,
+        roomTargetOverrideDurationMs:
+            typeof r.roomTargetOverrideDurationMs === 'number'
+                && Number.isFinite(r.roomTargetOverrideDurationMs)
+                && r.roomTargetOverrideDurationMs >= 0
+                ? r.roomTargetOverrideDurationMs
+                : DEFAULTS.roomTargetOverrideDurationMs,
         controllerRoomName:
-            typeof r.stairwellRoomName === 'string' && r.stairwellRoomName.trim() !== ''
-                ? r.stairwellRoomName.trim()
-                : (typeof r.controllerRoomName === 'string' && r.controllerRoomName.trim() !== ''
-                    ? r.controllerRoomName.trim()
+            typeof r.controllerRoomName === 'string' && r.controllerRoomName.trim() !== ''
+                ? r.controllerRoomName.trim()
+                : (typeof r.stairwellRoomName === 'string' && r.stairwellRoomName.trim() !== ''
+                    ? r.stairwellRoomName.trim()
                     : DEFAULTS.controllerRoomName),
         ventOpenRaw: typeof r.ventOpenRaw === 'number' && Number.isFinite(r.ventOpenRaw)
             ? r.ventOpenRaw
@@ -221,7 +251,11 @@ function applyRedundancyMerge(sensorsByRoom) {
     /** @type {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} */
     const out = { ...sensorsByRoom };
 
-    for (const [primary, alt] of Object.entries(REDUNDANT_ALT_ROOM_BY_PRIMARY)) {
+    for (const alt of Object.keys(sensorsByRoom)) {
+        const primary = primaryRoomFromRedundantAltLabel(alt);
+        if (primary === null) {
+            continue;
+        }
         const primaryRow = sensorsByRoom[primary] ?? { temperature: null, lastUpdateMs: null, humidity: null };
         const altRow = sensorsByRoom[alt] ?? { temperature: null, lastUpdateMs: null, humidity: null };
         const c = combineRedundantRoomReadings(primaryRow, altRow, nowMs);
@@ -294,7 +328,7 @@ function effectiveRoomBandTargets(room, nowMs, globalTargets) {
 }
 
 /**
- * Set a single room's target temperature for the next ~20 hours (vent automation only).
+ * Set a single room's target temperature for `roomTargetOverrideDurationMs` from vent config (vent automation only).
  * @param {string} room Room key matching `roomVentMap`.
  * @param {number} targetC Target temperature (°C).
  * @returns {{ ok: true, untilMs: number } | { ok: false, error: string }}
@@ -310,7 +344,7 @@ function setRoomTargetTemperatureTemporary(room, targetC) {
     if (!Object.prototype.hasOwnProperty.call(cfg.roomVentMap, room)) {
         return { ok: false, error: 'unknown_room' };
     }
-    const untilMs = Date.now() + ROOM_TARGET_OVERRIDE_DURATION_MS;
+    const untilMs = Date.now() + cfg.roomTargetOverrideDurationMs;
     roomTargetOverrideByRoom[room] = { targetC, untilMs };
     return { ok: true, untilMs };
 }
@@ -605,7 +639,7 @@ async function getAutomationDashboard() {
     const rooms = [];
     const roomNames = new Set([...Object.keys(merged), ...Object.keys(cfg.roomVentMap)]);
     for (const room of roomNames) {
-        if (REDUNDANT_ALT_ROOM_LABELS.has(room)) {
+        if (isRedundantAltSensorLabel(room)) {
             continue;
         }
         const row = merged[room] ?? { temperature: null, lastUpdateMs: null };
@@ -619,8 +653,8 @@ async function getAutomationDashboard() {
             lastUpdateMs: typeof row.lastUpdateMs === 'number' ? row.lastUpdateMs : null,
             temperatureSource: fromWifi ? 'wifi' : 'zigbee',
         };
-        const altLabel = REDUNDANT_ALT_ROOM_BY_PRIMARY[room];
-        if (altLabel) {
+        const altLabel = redundantAltLabelForPrimaryRoom(room);
+        if (Object.prototype.hasOwnProperty.call(rawMerged, altLabel)) {
             const pRaw = sensorRowToDashboardFields(rawMerged[room]);
             const aRaw = sensorRowToDashboardFields(rawMerged[altLabel]);
             entry.sensorPrimaryTemperatureC = pRaw.temperatureC;

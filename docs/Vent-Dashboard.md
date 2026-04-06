@@ -213,7 +213,7 @@ Relevant keys in `env.config.js` (see `env.config.js.sample`):
 | `coolTargetC` / `heatTargetC` | Band for **controller** room; outside → cooling/heating mode. |
 | `roomHysteresisC` | Per-room threshold slack. |
 | `manualOverrideMs` | How long manual API moves block automation for that motor. |
-| `stairwellRoomName` / `controllerRoomName` | Room label used as **controller** temperature (Zigbee map must match). |
+| `controllerRoomName` | Room label used as **controller** temperature (Zigbee map must match). Deprecated alias: `stairwellRoomName`. |
 | `ventOpenRaw` / `ventClosedRaw` | Positions automation sends (usually 100 / 0). |
 | `roomVentMap` | `{ "Room Name": motorId }` — must align Zigbee room labels with motors. |
 | `ventBaseUrl` | HTTP base for `vent.client`. |

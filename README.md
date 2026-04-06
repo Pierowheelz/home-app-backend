@@ -40,7 +40,8 @@ module.exports = {
         "heatTargetC": 21,
         "roomHysteresisC": 0.5,
         "manualOverrideMs": 3600000,
-        "stairwellRoomName": "Stairwell",
+        "roomTargetOverrideDurationMs": 72000000,
+        "controllerRoomName": "Stairwell",
         "ventBaseUrl": "http://192.168.2.110",
         "ventOpenRaw": 100,
         "ventClosedRaw": 0,
@@ -48,6 +49,14 @@ module.exports = {
             "Guest Room": 2,
             "Peter's Room": 0,
             "Burton's Room": 1
+        },
+        "zigbeeSensorMap": {
+            "0x954D": "Guest Room",
+            "0xD7D5": "Stairwell",
+            "0x9BBA": "Stairwell (alt)",
+            "0xA33F": "Peter's Room",
+            "0x8728": "Peter's Room (alt)",
+            "0x2047": "Burton's Room"
         },
         "actionLogRetentionMs": 172800000
     },
@@ -81,7 +90,7 @@ module.exports = {
 | `mqtt.url` | Broker host and port (e.g. `192.168.1.1:1883`). |
 | `mqtt.username` / `mqtt.password` | Broker auth (empty if anonymous). |
 | `environment` | Runtime label (e.g. `dev`, `prod`). |
-| `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, stairwell room name, vent HTTP base URL, open/closed raw positions, room-to-vent index map, action log retention. |
+| `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, controller room name, vent HTTP base URL, open/closed raw positions, room-to-vent index map, action log retention. |
 | `permissionLevels` | Numeric role flags (`NORMAL_USER`, `ADMIN_USER`). |
 | `users` | Seed users; `password` must be the server-encoded hash (see below). |
 
