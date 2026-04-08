@@ -133,7 +133,7 @@ function getVentAutomationConfig() {
 }
 
 /**
- * @returns {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>}
+ * @returns {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null, batteryLevel?: number|null, linkQuality?: number|null }>}
  */
 function getReadingsSnapshotFromZigbee() {
     try {
@@ -151,11 +151,11 @@ function getReadingsSnapshotFromZigbee() {
 
 /**
  * Merge Zigbee snapshot with supplemental Wi-Fi readings (Wi-Fi wins per room when present).
- * @param {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} zigbeeSensors
- * @returns {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>}
+ * @param {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null, batteryLevel?: number|null, linkQuality?: number|null }>} zigbeeSensors
+ * @returns {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null, batteryLevel?: number|null, linkQuality?: number|null }>}
  */
 function mergeSensors(zigbeeSensors) {
-    /** @type {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} */
+    /** @type {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null, batteryLevel?: number|null, linkQuality?: number|null }>} */
     const out = { ...zigbeeSensors };
     for (const [room, row] of Object.entries(wifiSupplementByRoom)) {
         if (row && typeof row.temperature === 'number' && Number.isFinite(row.temperature)) {
@@ -243,12 +243,12 @@ function combineRedundantRoomReadings(primaryRow, altRow, nowMs) {
 
 /**
  * Replace primary room rows with averaged (or fallback) readings when a redundant alt sensor exists.
- * @param {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} sensorsByRoom
- * @returns {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>}
+ * @param {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null, batteryLevel?: number|null, linkQuality?: number|null }>} sensorsByRoom
+ * @returns {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null, batteryLevel?: number|null, linkQuality?: number|null }>}
  */
 function applyRedundancyMerge(sensorsByRoom) {
     const nowMs = Date.now();
-    /** @type {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} */
+    /** @type {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null, batteryLevel?: number|null, linkQuality?: number|null }>} */
     const out = { ...sensorsByRoom };
 
     for (const alt of Object.keys(sensorsByRoom)) {
@@ -270,20 +270,24 @@ function applyRedundancyMerge(sensorsByRoom) {
 }
 
 /**
- * @param {{ temperature?: number|null, lastUpdateMs?: number|null, humidity?: number|null }|undefined} row
- * @returns {{ temperatureC: number|null, humidity: number|null, lastUpdateMs: number|null }}
+ * @param {{ temperature?: number|null, lastUpdateMs?: number|null, humidity?: number|null, batteryLevel?: number|null, linkQuality?: number|null }|undefined} row
+ * @returns {{ temperatureC: number|null, humidity: number|null, lastUpdateMs: number|null, battery: number|null, signal: number|null }}
  */
 function sensorRowToDashboardFields(row) {
     if (!row || typeof row !== 'object') {
-        return { temperatureC: null, humidity: null, lastUpdateMs: null };
+        return { temperatureC: null, humidity: null, lastUpdateMs: null, battery: null, signal: null };
     }
     const t = row.temperature;
     const h = row.humidity;
     const lu = row.lastUpdateMs;
+    const bat = row.batteryLevel;
+    const lq = row.linkQuality;
     return {
         temperatureC: typeof t === 'number' && Number.isFinite(t) ? t : null,
         humidity: typeof h === 'number' && Number.isFinite(h) ? h : null,
         lastUpdateMs: typeof lu === 'number' ? lu : null,
+        battery: typeof bat === 'number' && Number.isFinite(bat) ? bat : null,
+        signal: typeof lq === 'number' && Number.isFinite(lq) ? lq : null,
     };
 }
 
@@ -303,6 +307,21 @@ function isManualOverrideActive(motorId) {
 function recordManualOverride(motorId) {
     const cfg = getVentAutomationConfig();
     manualOverrideUntilByMotor[String(motorId)] = Date.now() + cfg.manualOverrideMs;
+}
+
+/**
+ * Cancel any active manual override for the motor mapped to `room`.
+ * @param {string} room
+ * @returns {void}
+ */
+function clearManualOverrideForRoom(room) {
+    const cfg = getVentAutomationConfig();
+    const motorIdRaw = cfg.roomVentMap[room];
+    const motorId = typeof motorIdRaw === 'number' ? motorIdRaw : Number(motorIdRaw);
+    if (!Number.isFinite(motorId)) {
+        return;
+    }
+    delete manualOverrideUntilByMotor[String(motorId)];
 }
 
 /**
@@ -328,12 +347,14 @@ function effectiveRoomBandTargets(room, nowMs, globalTargets) {
 }
 
 /**
- * Set a single room's target temperature for `roomTargetOverrideDurationMs` from vent config (vent automation only).
+ * Set a single room's target temperature for a temporary duration (vent automation only).
+ * When `durationMs` is omitted, `roomTargetOverrideDurationMs` from config is used.
  * @param {string} room Room key matching `roomVentMap`.
- * @param {number} targetC Target temperature (°C).
+ * @param {number} targetC Target temperature (C).
+ * @param {number} [durationMs] Optional override duration in milliseconds.
  * @returns {{ ok: true, untilMs: number } | { ok: false, error: string }}
  */
-function setRoomTargetTemperatureTemporary(room, targetC) {
+function setRoomTargetTemperatureTemporary(room, targetC, durationMs) {
     if (typeof room !== 'string' || room.trim() === '') {
         return { ok: false, error: 'invalid_room' };
     }
@@ -344,7 +365,12 @@ function setRoomTargetTemperatureTemporary(room, targetC) {
     if (!Object.prototype.hasOwnProperty.call(cfg.roomVentMap, room)) {
         return { ok: false, error: 'unknown_room' };
     }
-    const untilMs = Date.now() + cfg.roomTargetOverrideDurationMs;
+    const overrideDurationMs =
+        typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs >= 0
+            ? durationMs
+            : cfg.roomTargetOverrideDurationMs;
+    const untilMs = Date.now() + overrideDurationMs;
+    clearManualOverrideForRoom(room);
     roomTargetOverrideByRoom[room] = { targetC, untilMs };
     return { ok: true, untilMs };
 }
@@ -364,6 +390,7 @@ function clearRoomTargetTemperatureOverride(room) {
         return { ok: false, error: 'unknown_room' };
     }
     const hadActiveOverride = getRoomTargetOverride(trimmed) !== null;
+    clearManualOverrideForRoom(trimmed);
     delete roomTargetOverrideByRoom[trimmed];
     return { ok: true, hadActiveOverride };
 }
@@ -645,6 +672,7 @@ async function getAutomationDashboard() {
         const row = merged[room] ?? { temperature: null, lastUpdateMs: null };
         const temp = row.temperature;
         const fromWifi = Object.prototype.hasOwnProperty.call(wifiSupplementByRoom, room);
+        const primaryDash = sensorRowToDashboardFields(rawMerged[room]);
         /** @type {Record<string, unknown>} */
         const entry = {
             room,
@@ -652,6 +680,8 @@ async function getAutomationDashboard() {
             humidity: typeof row.humidity === 'number' && Number.isFinite(row.humidity) ? row.humidity : null,
             lastUpdateMs: typeof row.lastUpdateMs === 'number' ? row.lastUpdateMs : null,
             temperatureSource: fromWifi ? 'wifi' : 'zigbee',
+            battery: primaryDash.battery,
+            signal: primaryDash.signal,
         };
         const altLabel = redundantAltLabelForPrimaryRoom(room);
         if (Object.prototype.hasOwnProperty.call(rawMerged, altLabel)) {
@@ -663,6 +693,10 @@ async function getAutomationDashboard() {
             entry.sensorAltHumidity = aRaw.humidity;
             entry.sensorPrimaryLastUpdateMs = pRaw.lastUpdateMs;
             entry.sensorAltLastUpdateMs = aRaw.lastUpdateMs;
+            entry.battery = pRaw.battery;
+            entry.signal = pRaw.signal;
+            entry.batteryAlt = aRaw.battery;
+            entry.signalAlt = aRaw.signal;
         }
         const ventExtra = ventFieldsByRoom.get(room);
         rooms.push(ventExtra ? { ...entry, ...ventExtra } : entry);

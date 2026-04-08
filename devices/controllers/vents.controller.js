@@ -21,7 +21,8 @@ exports.getStatus = async (req, res) => {
 };
 
 /**
- * POST JSON `{ room, targetC }` — set per-room comfort target (20h), or `{ room, cancel: true }` to clear it.
+ * POST JSON `{ room, targetC, duration? }` — set per-room comfort target, or `{ room, cancel: true }` to clear it.
+ * `duration` is optional milliseconds; when omitted, config default duration is used.
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @returns {Promise<void>}
@@ -61,15 +62,24 @@ exports.setRoomTarget = async (req, res) => {
 
     const targetRaw = body.targetC;
     const targetC = typeof targetRaw === 'number' ? targetRaw : Number.NaN;
+    const durationRaw = body.duration;
+    const hasDuration = Object.prototype.hasOwnProperty.call(body, 'duration');
+    const durationMs = hasDuration && typeof durationRaw === 'number' ? durationRaw : Number.NaN;
     if (room === '' || !Number.isFinite(targetC)) {
         res.status(400).send({ success: false, error: 'invalid_body' });
+        return;
+    }
+    if (hasDuration && (!Number.isFinite(durationMs) || durationMs < 0)) {
+        res.status(400).send({ success: false, error: 'invalid_duration' });
         return;
     }
     if (targetC < 5 || targetC > 35) {
         res.status(400).send({ success: false, error: 'targetC_out_of_range' });
         return;
     }
-    const result = ventAutomation.setRoomTargetTemperatureTemporary(room, targetC);
+    const result = hasDuration
+        ? ventAutomation.setRoomTargetTemperatureTemporary(room, targetC, durationMs)
+        : ventAutomation.setRoomTargetTemperatureTemporary(room, targetC);
     if (!result.ok) {
         const code = result.error === 'unknown_room' ? 404 : 400;
         res.status(code).send({ success: false, error: result.error });
@@ -86,6 +96,7 @@ exports.setRoomTarget = async (req, res) => {
         error: '',
         room,
         targetC,
+        durationMs: hasDuration ? durationMs : undefined,
         untilMs: result.untilMs,
     });
 };
