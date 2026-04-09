@@ -435,23 +435,23 @@ function getRoomTargetOverride(room, nowMs = Date.now()) {
 }
 
 /**
- * Controller-room band mode (matches {@link resolveHvacMode} for a known temperature).
- * Applies room hysteresis so idle is between `heatTargetC + roomHysteresisC` and `coolTargetC - roomHysteresisC`
- * (aligned with per-room `heatRoomTarget` / `coolRoomTarget`).
- * @param {number} stairTempC
+ * Controller-room band from temperature (single source of truth for hysteresis bands).
+ * Idle is between `heatTargetC + roomHysteresisC` and `coolTargetC - roomHysteresisC`
+ * (aligned with per-room `heatRoomTarget` / `coolRoomTarget`). {@link resolveHvacMode} delegates here after guards.
+ * @param {number} controllerTempC
  * @param {number} heatTargetC
  * @param {number} coolTargetC
  * @param {number} [roomHysteresisC=0]
  * @returns {'cooling'|'heating'|'idle'}
  */
-function resolveVentAutomationHvacMode(stairTempC, heatTargetC, coolTargetC, roomHysteresisC = 0) {
+function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC, roomHysteresisC = 0) {
     const h = typeof roomHysteresisC === 'number' && Number.isFinite(roomHysteresisC) ? roomHysteresisC : 0;
     const coolBandC = coolTargetC - h;
     const heatBandC = heatTargetC + h;
-    if (stairTempC >= heatBandC && stairTempC <= coolBandC) {
+    if (controllerTempC >= heatBandC && controllerTempC <= coolBandC) {
         return 'idle';
     }
-    if (stairTempC > coolBandC) {
+    if (controllerTempC > coolBandC) {
         return 'cooling';
     }
     return 'heating';
@@ -630,10 +630,10 @@ async function runAutomationTickFromSnapshot() {
 }
 
 /**
- * Resolve HVAC mode from controller room temperature and config.
+ * HVAC mode for dashboards: disabled/unknown guards, then {@link resolveVentAutomationHvacMode}.
  * @param {boolean} enabled
  * @param {number|null} controllerTempC
- * @param {{ coolTargetC: number, heatTargetC: number }} targets
+ * @param {{ coolTargetC: number, heatTargetC: number, roomHysteresisC?: number }} targets
  * @returns {'idle'|'cooling'|'heating'|'unknown'|'disabled'}
  */
 function resolveHvacMode(enabled, targets, controllerTempC) {
@@ -643,14 +643,8 @@ function resolveHvacMode(enabled, targets, controllerTempC) {
     if (controllerTempC === null || !Number.isFinite(controllerTempC)) {
         return 'unknown';
     }
-    const { coolTargetC, heatTargetC } = targets;
-    if (controllerTempC >= heatTargetC && controllerTempC <= coolTargetC) {
-        return 'idle';
-    }
-    if (controllerTempC > coolTargetC) {
-        return 'cooling';
-    }
-    return 'heating';
+    const { coolTargetC, heatTargetC, roomHysteresisC } = targets;
+    return resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC, roomHysteresisC);
 }
 
 /**
@@ -668,9 +662,15 @@ async function getAutomationDashboard() {
         ? stairRow.temperature
         : null;
 
-    const mode = resolveHvacMode(cfg.enabled, { coolTargetC: cfg.coolTargetC, heatTargetC: cfg.heatTargetC }, controllerTempC);
-
     const nowDash = Date.now();
+    const rawMode = resolveHvacMode(cfg.enabled, {
+        coolTargetC: cfg.coolTargetC,
+        heatTargetC: cfg.heatTargetC,
+        roomHysteresisC: cfg.roomHysteresisC,
+    }, controllerTempC);
+    const mode = rawMode === 'idle' || rawMode === 'cooling' || rawMode === 'heating'
+        ? applyVentAutomationHvacIdleHold(rawMode, cfg.hvacModeIdleHoldAfterActiveMs, nowDash)
+        : rawMode;
 
     await ventClient.getVentStatus();
     const ventPayload = ventClient.getCachedVentPayload();
