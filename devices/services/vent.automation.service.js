@@ -16,6 +16,15 @@ let lastAutomationEvaluationAt = /** @type {number|null} */ (null);
  */
 let lastVentAutomationHvacMode = null;
 
+/** Epoch ms until which {@link ventHvacHeldMode} is reported instead of raw idle (see {@link applyVentAutomationHvacIdleHold}). */
+let ventHvacActiveHoldUntilMs = /** @type {number|null} */ (null);
+
+/**
+ * Last non-idle mode while hold is active (after raw mode was heating or cooling).
+ * @type {'cooling'|'heating'|null}
+ */
+let ventHvacHeldMode = null;
+
 /** @type {Record<string, { targetC: number, untilMs: number }>} */
 const roomTargetOverrideByRoom = {};
 
@@ -69,6 +78,8 @@ const DEFAULTS = {
     coolTargetC: 23,
     heatTargetC: 21,
     roomHysteresisC: 0.5,
+    /** After raw HVAC mode is heating or cooling, raw idle is ignored until this many ms elapse from the last active tick. */
+    hvacModeIdleHoldAfterActiveMs: 60 * 60 * 1000,
     manualOverrideMs: 3600000,
     /** How long {@link setRoomTargetTemperatureTemporary} keeps a per-room target active. */
     roomTargetOverrideDurationMs: 20 * 60 * 60 * 1000,
@@ -106,6 +117,12 @@ function getVentAutomationConfig() {
         roomHysteresisC: typeof r.roomHysteresisC === 'number' && Number.isFinite(r.roomHysteresisC)
             ? r.roomHysteresisC
             : DEFAULTS.roomHysteresisC,
+        hvacModeIdleHoldAfterActiveMs:
+            typeof r.hvacModeIdleHoldAfterActiveMs === 'number'
+                && Number.isFinite(r.hvacModeIdleHoldAfterActiveMs)
+                && r.hvacModeIdleHoldAfterActiveMs >= 0
+                ? r.hvacModeIdleHoldAfterActiveMs
+                : DEFAULTS.hvacModeIdleHoldAfterActiveMs,
         manualOverrideMs: typeof r.manualOverrideMs === 'number' && Number.isFinite(r.manualOverrideMs) && r.manualOverrideMs >= 0
             ? r.manualOverrideMs
             : DEFAULTS.manualOverrideMs,
@@ -419,19 +436,50 @@ function getRoomTargetOverride(room, nowMs = Date.now()) {
 
 /**
  * Controller-room band mode (matches {@link resolveHvacMode} for a known temperature).
+ * Applies room hysteresis so idle is between `heatTargetC + roomHysteresisC` and `coolTargetC - roomHysteresisC`
+ * (aligned with per-room `heatRoomTarget` / `coolRoomTarget`).
  * @param {number} stairTempC
  * @param {number} heatTargetC
  * @param {number} coolTargetC
+ * @param {number} [roomHysteresisC=0]
  * @returns {'cooling'|'heating'|'idle'}
  */
-function resolveVentAutomationHvacMode(stairTempC, heatTargetC, coolTargetC) {
-    if (stairTempC >= heatTargetC && stairTempC <= coolTargetC) {
+function resolveVentAutomationHvacMode(stairTempC, heatTargetC, coolTargetC, roomHysteresisC = 0) {
+    const h = typeof roomHysteresisC === 'number' && Number.isFinite(roomHysteresisC) ? roomHysteresisC : 0;
+    const coolBandC = coolTargetC - h;
+    const heatBandC = heatTargetC + h;
+    if (stairTempC >= heatBandC && stairTempC <= coolBandC) {
         return 'idle';
     }
-    if (stairTempC > coolTargetC) {
+    if (stairTempC > coolBandC) {
         return 'cooling';
     }
     return 'heating';
+}
+
+/**
+ * When raw mode is heating or cooling, refreshes the hold window and returns that mode.
+ * When raw mode is idle, returns the held mode until {@link ventHvacActiveHoldUntilMs}, then idle.
+ * @param {'cooling'|'heating'|'idle'} rawMode
+ * @param {number} holdAfterActiveMs Hold duration in ms; 0 disables idle hold.
+ * @param {number} nowMs
+ * @returns {'cooling'|'heating'|'idle'}
+ */
+function applyVentAutomationHvacIdleHold(rawMode, holdAfterActiveMs, nowMs) {
+    const holdMs = typeof holdAfterActiveMs === 'number' && Number.isFinite(holdAfterActiveMs) && holdAfterActiveMs > 0
+        ? holdAfterActiveMs
+        : 0;
+    if (rawMode === 'heating' || rawMode === 'cooling') {
+        ventHvacActiveHoldUntilMs = nowMs + holdMs;
+        ventHvacHeldMode = rawMode;
+        return rawMode;
+    }
+    if (holdMs > 0 && ventHvacHeldMode !== null && ventHvacActiveHoldUntilMs !== null && nowMs < ventHvacActiveHoldUntilMs) {
+        return ventHvacHeldMode;
+    }
+    ventHvacActiveHoldUntilMs = null;
+    ventHvacHeldMode = null;
+    return 'idle';
 }
 
 /**
@@ -462,8 +510,10 @@ async function evaluateAndAct(sensorsByRoom) {
         return;
     }
 
-    const { coolTargetC, heatTargetC, roomHysteresisC } = cfg;
-    const currHvacMode = resolveVentAutomationHvacMode(stairTemp, heatTargetC, coolTargetC);
+    const { coolTargetC, heatTargetC, roomHysteresisC, hvacModeIdleHoldAfterActiveMs } = cfg;
+    const nowEval = Date.now();
+    const rawHvacMode = resolveVentAutomationHvacMode(stairTemp, heatTargetC, coolTargetC, roomHysteresisC);
+    const currHvacMode = applyVentAutomationHvacIdleHold(rawHvacMode, hvacModeIdleHoldAfterActiveMs, nowEval);
     const prevHvacMode = lastVentAutomationHvacMode;
     if (
         (prevHvacMode === 'cooling' && currHvacMode === 'heating')
