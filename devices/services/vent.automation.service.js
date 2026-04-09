@@ -28,6 +28,9 @@ let ventHvacHeldMode = null;
 /** @type {Record<string, { targetC: number, untilMs: number }>} */
 const roomTargetOverrideByRoom = {};
 
+/** @type {Record<string, number>} Last automation-issued vent command per room (for directional hysteresis). */
+const lastAutomationCmdByRoom = {};
+
 /**
  * Redundant Zigbee alt rows use the primary room name plus this suffix (see {@link isRedundantAltSensorLabel}).
  * @type {string}
@@ -351,7 +354,8 @@ function clearManualOverrideForRoom(room) {
 
 /**
  * Vent command for a room from temperature bands. Full open / full close use `ventOpenRaw` / `ventClosedRaw`;
- * the hysteresis band interpolates between them using `hysteresisBandCmd` as 0–100 along that span.
+ * the hysteresis band uses `hysteresisBandCmd` only when the temperature entered the band from the fully-open
+ * side (directional hysteresis via `prevCmd`). When entering from the closed side the vent stays closed.
  * @param {'cooling'|'heating'} mode
  * @param {number} roomTempC
  * @param {number} coolTargetC
@@ -360,6 +364,7 @@ function clearManualOverrideForRoom(room) {
  * @param {number} hysteresisBandCmd 0–100 along closed→open.
  * @param {number} ventOpenRaw
  * @param {number} ventClosedRaw
+ * @param {number} [prevCmd] Previous automation command for this room (undefined on first evaluation).
  * @returns {number}
  */
 function ventTargetForRoom(
@@ -371,6 +376,7 @@ function ventTargetForRoom(
     hysteresisBandCmd,
     ventOpenRaw,
     ventClosedRaw,
+    prevCmd,
 ) {
     if (mode === 'cooling') {
         const lowC = coolTargetC - roomHysteresisC;
@@ -378,6 +384,9 @@ function ventTargetForRoom(
             return ventOpenRaw;
         }
         if (roomTempC >= lowC && roomTempC <= coolTargetC) {
+            if (prevCmd !== undefined && prevCmd !== ventOpenRaw && prevCmd !== hysteresisBandCmd) {
+                return ventClosedRaw;
+            }
             return hysteresisBandCmd;
         }
         return ventClosedRaw;
@@ -388,6 +397,9 @@ function ventTargetForRoom(
             return ventOpenRaw;
         }
         if (roomTempC >= heatTargetC && roomTempC <= highH) {
+            if (prevCmd !== undefined && prevCmd !== ventOpenRaw && prevCmd !== hysteresisBandCmd) {
+                return ventClosedRaw;
+            }
             return hysteresisBandCmd;
         }
         return ventClosedRaw;
@@ -565,6 +577,9 @@ async function evaluateAndAct(sensorsByRoom) {
         || (prevHvacMode === 'heating' && currHvacMode === 'cooling')
     ) {
         clearAllRoomTargetOverrides();
+        for (const key of Object.keys(lastAutomationCmdByRoom)) {
+            delete lastAutomationCmdByRoom[key];
+        }
     }
     lastVentAutomationHvacMode = currHvacMode;
 
@@ -613,7 +628,9 @@ async function evaluateAndAct(sensorsByRoom) {
             cfg.hysteresisClosePercent,
             cfg.ventOpenRaw,
             cfg.ventClosedRaw,
+            lastAutomationCmdByRoom[roomName],
         );
+        lastAutomationCmdByRoom[roomName] = targetRaw;
 
         const pos = ventClient.readMotorPos(ventPayload, motorId);
         if (pos === null) {
@@ -731,6 +748,7 @@ async function getAutomationDashboard() {
                 cfg.hysteresisClosePercent,
                 cfg.ventOpenRaw,
                 cfg.ventClosedRaw,
+                lastAutomationCmdByRoom[roomName],
             );
             wantOpen = ventTargetOpenPercent > 0;
         }
