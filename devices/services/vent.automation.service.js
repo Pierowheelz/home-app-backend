@@ -86,6 +86,7 @@ const DEFAULTS = {
     controllerRoomName: 'Stairwell',
     ventOpenRaw: 100,
     ventClosedRaw: 0,
+    hysteresisClosePercent: 50,
     roomVentMap: /** @type {Record<string, number>} */ ({
         "Guest Room": 2,
         "Peter's Room": 0,
@@ -144,6 +145,13 @@ function getVentAutomationConfig() {
         ventClosedRaw: typeof r.ventClosedRaw === 'number' && Number.isFinite(r.ventClosedRaw)
             ? r.ventClosedRaw
             : DEFAULTS.ventClosedRaw,
+        hysteresisClosePercent:
+            typeof r.hysteresisClosePercent === 'number'
+                && Number.isFinite(r.hysteresisClosePercent)
+                && r.hysteresisClosePercent >= 0
+                && r.hysteresisClosePercent <= 100
+                ? r.hysteresisClosePercent
+                : DEFAULTS.hysteresisClosePercent,
         roomVentMap,
         ventBaseUrl: typeof r.ventBaseUrl === 'string' ? r.ventBaseUrl : undefined,
     };
@@ -339,6 +347,52 @@ function clearManualOverrideForRoom(room) {
         return;
     }
     delete manualOverrideUntilByMotor[String(motorId)];
+}
+
+/**
+ * Vent command for a room from temperature bands. Full open / full close use `ventOpenRaw` / `ventClosedRaw`;
+ * the hysteresis band interpolates between them using `hysteresisBandCmd` as 0–100 along that span.
+ * @param {'cooling'|'heating'} mode
+ * @param {number} roomTempC
+ * @param {number} coolTargetC
+ * @param {number} heatTargetC
+ * @param {number} roomHysteresisC
+ * @param {number} hysteresisBandCmd 0–100 along closed→open.
+ * @param {number} ventOpenRaw
+ * @param {number} ventClosedRaw
+ * @returns {number}
+ */
+function ventTargetForRoom(
+    mode,
+    roomTempC,
+    coolTargetC,
+    heatTargetC,
+    roomHysteresisC,
+    hysteresisBandCmd,
+    ventOpenRaw,
+    ventClosedRaw,
+) {
+    if (mode === 'cooling') {
+        const lowC = coolTargetC - roomHysteresisC;
+        if (roomTempC > coolTargetC) {
+            return ventOpenRaw; // 100% open
+        }
+        if (roomTempC >= lowC && roomTempC <= coolTargetC) {
+            return hysteresisBandCmd;
+        }
+        return ventClosedRaw; // 0% open
+    }
+    if (mode === 'heating') {
+        const highH = heatTargetC + roomHysteresisC;
+        if (roomTempC < heatTargetC) {
+            return ventOpenRaw; // 100% open
+        }
+        if (roomTempC >= heatTargetC && roomTempC <= highH) {
+            return hysteresisBandCmd;
+        }
+        return ventClosedRaw; // 0% open
+    }
+    return ventClosedRaw; // 0% open
 }
 
 /**
@@ -562,53 +616,46 @@ async function evaluateAndAct(sensorsByRoom) {
         }
 
         const eff = effectiveRoomBandTargets(roomName, nowTick, { coolTargetC, heatTargetC });
-        const coolRoomTarget = eff.coolTargetC - roomHysteresisC;
-        const heatRoomTarget = eff.heatTargetC + roomHysteresisC;
-
-        let wantOpen = false;
-        if (cooling) {
-            wantOpen = roomTemp > coolRoomTarget;
-        } else if (heating) {
-            wantOpen = roomTemp < heatRoomTarget;
-        }
+        const hvacMode = cooling ? /** @type {const} */ ('cooling') : /** @type {const} */ ('heating');
+        const targetRaw = ventTargetForRoom(
+            hvacMode,
+            roomTemp,
+            eff.coolTargetC,
+            eff.heatTargetC,
+            roomHysteresisC,
+            cfg.hysteresisClosePercent,
+            cfg.ventOpenRaw,
+            cfg.ventClosedRaw,
+        );
 
         const pos = ventClient.readMotorPos(ventPayload, motorId);
         if (pos === null) {
             continue;
         }
 
-        const mode = cooling ? /** @type {const} */ ('cooling') : /** @type {const} */ ('heating');
-        if (wantOpen) {
-            if (pos <= 0) {
-                const { ok } = await ventClient.setVentMotorRaw(motorId, cfg.ventOpenRaw);
-                ventActionLog.append({
-                    source: 'automation',
-                    action: 'open',
-                    motorId,
-                    roomName,
-                    success: ok,
-                    targetRaw: cfg.ventOpenRaw,
-                    mode,
-                    controllerTempC: stairTemp,
-                    roomTempC: roomTemp,
-                    posBefore: pos,
-                });
-            }
-        } else if (pos > 0) {
-            const { ok } = await ventClient.setVentMotorRaw(motorId, cfg.ventClosedRaw);
-            ventActionLog.append({
-                source: 'automation',
-                action: 'close',
-                motorId,
-                roomName,
-                success: ok,
-                targetRaw: cfg.ventClosedRaw,
-                mode,
-                controllerTempC: stairTemp,
-                roomTempC: roomTemp,
-                posBefore: pos,
-            });
+        const posMatchTol = 3;
+        if (Math.abs(pos - targetRaw) <= posMatchTol) {
+            continue;
         }
+        const { ok } = await ventClient.setVentMotorRaw(motorId, targetRaw);
+        const openR = Math.round(cfg.ventOpenRaw);
+        const closedR = Math.round(cfg.ventClosedRaw);
+        const action =
+            Math.abs(targetRaw - openR) <= posMatchTol ? 'open'
+                : Math.abs(targetRaw - closedR) <= posMatchTol ? 'close'
+                : 'set';
+        ventActionLog.append({
+            source: 'automation',
+            action,
+            motorId,
+            roomName,
+            success: ok,
+            targetRaw,
+            mode: hvacMode,
+            controllerTempC: stairTemp,
+            roomTempC: roomTemp,
+            posBefore: pos,
+        });
     }
 }
 
@@ -689,13 +736,20 @@ async function getAutomationDashboard() {
         const row = merged[roomName];
         const roomTemp = row && typeof row.temperature === 'number' ? row.temperature : null;
         const eff = effectiveRoomBandTargets(roomName, nowDash, { coolTargetC: cfg.coolTargetC, heatTargetC: cfg.heatTargetC });
-        const coolRoomTarget = eff.coolTargetC - cfg.roomHysteresisC;
-        const heatRoomTarget = eff.heatTargetC + cfg.roomHysteresisC;
+        let ventTargetOpenPercent = null;
         let wantOpen = null;
-        if (mode === 'cooling' && roomTemp !== null && Number.isFinite(roomTemp)) {
-            wantOpen = roomTemp > coolRoomTarget;
-        } else if (mode === 'heating' && roomTemp !== null && Number.isFinite(roomTemp)) {
-            wantOpen = roomTemp < heatRoomTarget;
+        if ((mode === 'cooling' || mode === 'heating') && roomTemp !== null && Number.isFinite(roomTemp)) {
+            ventTargetOpenPercent = ventTargetForRoom(
+                mode,
+                roomTemp,
+                eff.coolTargetC,
+                eff.heatTargetC,
+                cfg.roomHysteresisC,
+                cfg.hysteresisClosePercent,
+                cfg.ventOpenRaw,
+                cfg.ventClosedRaw,
+            );
+            wantOpen = ventTargetOpenPercent > 0;
         }
         const isOpen = slot !== null && slot.pos > 0;
         const rtOverride = getRoomTargetOverride(roomName, nowDash);
@@ -705,6 +759,7 @@ async function getAutomationDashboard() {
             pos: slot?.pos ?? null,
             isOpen,
             wantOpen,
+            ventTargetOpenPercent,
             manualOverrideActive,
             manualOverrideUntilMs: manualOverrideActive ? until : null,
             roomTargetOverrideC: rtOverride?.targetC ?? null,
@@ -768,6 +823,9 @@ async function getAutomationDashboard() {
             coolTargetC: cfg.coolTargetC,
             heatTargetC: cfg.heatTargetC,
             roomHysteresisC: cfg.roomHysteresisC,
+            hysteresisClosePercent: cfg.hysteresisClosePercent,
+            ventOpenRaw: cfg.ventOpenRaw,
+            ventClosedRaw: cfg.ventClosedRaw,
         },
         rooms,
         lastAutomationEvaluationAt,

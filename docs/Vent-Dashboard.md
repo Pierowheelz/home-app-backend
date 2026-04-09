@@ -214,7 +214,8 @@ Relevant keys in `env.config.js` (see `env.config.js.sample`):
 | `roomHysteresisC` | Per-room threshold slack. |
 | `manualOverrideMs` | How long manual API moves block automation for that motor. |
 | `controllerRoomName` | Room label used as **controller** temperature (Zigbee map must match). Deprecated alias: `stairwellRoomName`. |
-| `ventOpenRaw` / `ventClosedRaw` | Positions automation sends (usually 100 / 0). |
+| `hysteresisClosePercent` | Vent command 0–100 in the per-room temperature hysteresis band next to the target (100 = legacy: fully open until past the band). |
+| `ventOpenRaw` / `ventClosedRaw` | Positions automation uses for full open and full close (typically 100 / 0). |
 | `roomVentMap` | `{ "Room Name": motorId }` — must align Zigbee room labels with motors. |
 | `ventBaseUrl` | HTTP base for `vent.client`. |
 | `actionLogRetentionMs` | Log trimming window. |
