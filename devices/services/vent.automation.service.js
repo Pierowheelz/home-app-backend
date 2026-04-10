@@ -1,5 +1,19 @@
 const ventClient = require('../lib/vent.client');
 const ventActionLog = require('./vent.action.log');
+const {
+    roundToOneDecimal,
+    isFiniteNum,
+    finiteNumOrDefault,
+    parseMotorId,
+    readRowTemp,
+    normalizedPauseHrsMap,
+    parsePauseHrsWindow,
+    getWallClockMinutesInTimeZone,
+    roomNameForMotorInMap,
+    isRedundantAltSensorLabel,
+    primaryRoomFromRedundantAltLabel,
+    redundantAltLabelForPrimaryRoom,
+} = require('../lib/vent.automation.utils');
 
 /** @type {Record<string, number>} motorId (as string) -> manual override until epoch ms */
 const manualOverrideUntilByMotor = /** @type {Record<string, number>} */ ({});
@@ -31,94 +45,8 @@ const roomTargetOverrideByRoom = {};
 /** @type {Record<string, number>} Last automation-issued vent command per room (for directional hysteresis). */
 const lastAutomationCmdByRoom = {};
 
-/**
- * Redundant Zigbee alt rows use the primary room name plus this suffix (see {@link isRedundantAltSensorLabel}).
- * @type {string}
- */
-const REDUNDANT_ALT_SENSOR_SUFFIX = ' (alt)';
-
-/**
- * @param {string} roomRowKey
- * @returns {boolean}
- */
-function isRedundantAltSensorLabel(roomRowKey) {
-    return typeof roomRowKey === 'string' && / \(alt\)$/.test(roomRowKey);
-}
-
-/**
- * @param {string} altRowKey
- * @returns {string|null} Primary room label, or null if `altRowKey` does not match `/^(.+) \(alt\)$/`.
- */
-function primaryRoomFromRedundantAltLabel(altRowKey) {
-    if (typeof altRowKey !== 'string') {
-        return null;
-    }
-    const m = /^(.*) \(alt\)$/.exec(altRowKey);
-    return m !== null && m[1].length > 0 ? m[1] : null;
-}
-
-/**
- * @param {string} primaryRoom
- * @returns {string}
- */
-function redundantAltLabelForPrimaryRoom(primaryRoom) {
-    return primaryRoom + REDUNDANT_ALT_SENSOR_SUFFIX;
-}
-
 /** Stale-after: if no temperature telegram within this window, redundant pair member is excluded from averaging. */
 const REDUNDANT_SENSOR_OFFLINE_MS = 30 * 60 * 1000;
-
-/**
- * @param {number} n
- * @returns {number}
- */
-function roundToOneDecimal(n) {
-    return Math.round(n * 10) / 10;
-}
-
-/**
- * @param {unknown} x
- * @returns {x is number}
- */
-function isFiniteNum(x) {
-    return typeof x === 'number' && Number.isFinite(x);
-}
-
-/**
- * Return `val` if it is a finite number passing optional constraints, otherwise `fallback`.
- * @param {unknown} val
- * @param {number} fallback
- * @param {{ min?: number, max?: number }} [constraints]
- * @returns {number}
- */
-function finiteNumOrDefault(val, fallback, constraints) {
-    if (!isFiniteNum(val)) return fallback;
-    if (constraints) {
-        if (constraints.min !== undefined && val < constraints.min) return fallback;
-        if (constraints.max !== undefined && val > constraints.max) return fallback;
-    }
-    return val;
-}
-
-/**
- * Parse a raw motorId (number or string) into a finite number, or null.
- * @param {unknown} raw
- * @returns {number|null}
- */
-function parseMotorId(raw) {
-    const id = typeof raw === 'number' ? raw : Number(raw);
-    return Number.isFinite(id) ? id : null;
-}
-
-/**
- * Extract a finite temperature from a sensor row, or null.
- * @param {{ temperature?: number|null }|null|undefined} row
- * @returns {number|null}
- */
-function readRowTemp(row) {
-    if (!row || typeof row !== 'object') return null;
-    return isFiniteNum(row.temperature) ? row.temperature : null;
-}
 
 const DEFAULTS = {
     enabled: true,
@@ -139,7 +67,43 @@ const DEFAULTS = {
         "Peter's Room": 0,
         "Burton's Room": 1,
     }),
+    /** Room label → `HH:mm-HH:mm` local window (may span midnight); evaluated in {@link getVentAutomationConfig}'s `timezone`. */
+    pauseHrs: /** @type {Record<string, string>} */ ({}),
+    /** IANA zone for {@link pauseHrs} (e.g. `Australia/Sydney`). */
+    timezone: 'UTC',
 };
+
+/**
+ * @param {typeof DEFAULTS & { ventBaseUrl?: string, pauseHrs: Record<string, string>, timezone: string }} cfg
+ * @param {number|string} motorId
+ * @param {number} nowMs
+ * @returns {boolean}
+ */
+function isPauseHoursActiveForMotor(cfg, motorId, nowMs) {
+    const room = roomNameForMotorInMap(cfg.roomVentMap, motorId);
+    if (room === null) {
+        return false;
+    }
+    const spec = cfg.pauseHrs[room];
+    if (typeof spec !== 'string') {
+        return false;
+    }
+    const window = parsePauseHrsWindow(spec);
+    if (window === null) {
+        return false;
+    }
+    const localMin = getWallClockMinutesInTimeZone(new Date(nowMs), cfg.timezone);
+    if (localMin === null) {
+        return false;
+    }
+    if (window.startMin < window.endMin) {
+        return localMin >= window.startMin && localMin < window.endMin;
+    }
+    if (window.startMin > window.endMin) {
+        return localMin >= window.startMin || localMin < window.endMin;
+    }
+    return false;
+}
 
 /**
  * Resolve `appconfig.ventAutomation` merged with {@link DEFAULTS}.
@@ -179,6 +143,11 @@ function getVentAutomationConfig() {
         ),
         roomVentMap,
         ventBaseUrl: typeof r.ventBaseUrl === 'string' ? r.ventBaseUrl : undefined,
+        pauseHrs: normalizedPauseHrsMap(r.pauseHrs, DEFAULTS.pauseHrs),
+        timezone:
+            typeof r.timezone === 'string' && r.timezone.trim() !== ''
+                ? r.timezone.trim()
+                : DEFAULTS.timezone,
     };
 }
 
@@ -321,12 +290,17 @@ function sensorRowToDashboardFields(row) {
 }
 
 /**
+ * True while the manual API override timer is active or the room's configured {@link getVentAutomationConfig}'s `pauseHrs` window applies.
  * @param {number|string} motorId
  * @returns {boolean}
  */
 function isManualOverrideActive(motorId) {
+    const now = Date.now();
     const until = manualOverrideUntilByMotor[String(motorId)] ?? 0;
-    return Date.now() < until;
+    if (now < until) {
+        return true;
+    }
+    return isPauseHoursActiveForMotor(getVentAutomationConfig(), motorId, now);
 }
 
 /**
@@ -495,7 +469,7 @@ function getRoomTargetOverride(room, nowMs = Date.now()) {
 /**
  * Controller-room band from temperature (single source of truth for hysteresis bands).
  * Idle is between `heatTargetC + roomHysteresisC` and `coolTargetC - roomHysteresisC`
- * (aligned with per-room `heatRoomTarget` / `coolRoomTarget`). {@link resolveHvacMode} delegates here after guards.
+ * (aligned with per-room `heatRoomTarget` / `coolRoomTarget`). Dashboard mode uses the same bands after enabled/temperature guards.
  * @param {number} controllerTempC
  * @param {number} heatTargetC
  * @param {number} coolTargetC
@@ -541,15 +515,6 @@ function applyVentAutomationHvacIdleHold(rawMode, holdAfterActiveMs, nowMs) {
 }
 
 /**
- * @returns {void}
- */
-function clearAllRoomTargetOverrides() {
-    for (const key of Object.keys(roomTargetOverrideByRoom)) {
-        delete roomTargetOverrideByRoom[key];
-    }
-}
-
-/**
  * @param {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} sensorsByRoom
  * @returns {Promise<void>}
  */
@@ -576,7 +541,9 @@ async function evaluateAndAct(sensorsByRoom) {
         (prevHvacMode === 'cooling' && currHvacMode === 'heating')
         || (prevHvacMode === 'heating' && currHvacMode === 'cooling')
     ) {
-        clearAllRoomTargetOverrides();
+        for (const key of Object.keys(roomTargetOverrideByRoom)) {
+            delete roomTargetOverrideByRoom[key];
+        }
         for (const key of Object.keys(lastAutomationCmdByRoom)) {
             delete lastAutomationCmdByRoom[key];
         }
@@ -680,24 +647,6 @@ async function runAutomationTickFromSnapshot() {
 }
 
 /**
- * HVAC mode for dashboards: disabled/unknown guards, then {@link resolveVentAutomationHvacMode}.
- * @param {boolean} enabled
- * @param {{ coolTargetC: number, heatTargetC: number, roomHysteresisC?: number }} targets
- * @param {number|null} controllerTempC
- * @returns {'idle'|'cooling'|'heating'|'unknown'|'disabled'}
- */
-function resolveHvacMode(enabled, targets, controllerTempC) {
-    if (!enabled) {
-        return 'disabled';
-    }
-    if (!isFiniteNum(controllerTempC)) {
-        return 'unknown';
-    }
-    const { coolTargetC, heatTargetC, roomHysteresisC } = targets;
-    return resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC, roomHysteresisC);
-}
-
-/**
  * Snapshot for dashboards: per-room temps and optional vent fields, mode, targets, and recent log stats.
  * Refreshes vent hardware once via {@link ventClient.getVentStatus}.
  * @returns {Promise<Record<string, unknown>>}
@@ -710,11 +659,20 @@ async function getAutomationDashboard() {
     const controllerTempC = readRowTemp(merged[stairName]);
 
     const nowDash = Date.now();
-    const rawMode = resolveHvacMode(cfg.enabled, {
-        coolTargetC: cfg.coolTargetC,
-        heatTargetC: cfg.heatTargetC,
-        roomHysteresisC: cfg.roomHysteresisC,
-    }, controllerTempC);
+    /** @type {'idle'|'cooling'|'heating'|'unknown'|'disabled'} */
+    let rawMode;
+    if (!cfg.enabled) {
+        rawMode = 'disabled';
+    } else if (!isFiniteNum(controllerTempC)) {
+        rawMode = 'unknown';
+    } else {
+        rawMode = resolveVentAutomationHvacMode(
+            controllerTempC,
+            cfg.heatTargetC,
+            cfg.coolTargetC,
+            cfg.roomHysteresisC,
+        );
+    }
     const mode = rawMode === 'idle' || rawMode === 'cooling' || rawMode === 'heating'
         ? applyVentAutomationHvacIdleHold(rawMode, cfg.hvacModeIdleHoldAfterActiveMs, nowDash)
         : rawMode;
@@ -732,7 +690,8 @@ async function getAutomationDashboard() {
             continue;
         }
         const until = manualOverrideUntilByMotor[String(motorId)] ?? 0;
-        const manualOverrideActive = nowDash < until;
+        const manualTimerActive = nowDash < until;
+        const manualOverrideActive = manualTimerActive || isPauseHoursActiveForMotor(cfg, motorId, nowDash);
         const slot = ventClient.readMotorSlot(ventPayload, motorId);
         const roomTemp = readRowTemp(merged[roomName]);
         const eff = effectiveRoomBandTargets(roomName, nowDash, globalTargets);
@@ -762,7 +721,7 @@ async function getAutomationDashboard() {
             wantOpen,
             ventTargetOpenPercent,
             manualOverrideActive,
-            manualOverrideUntilMs: manualOverrideActive ? until : null,
+            manualOverrideUntilMs: manualTimerActive ? until : null,
             roomTargetOverrideC: rtOverride?.targetC ?? null,
             roomTargetOverrideUntilMs: rtOverride?.untilMs ?? null,
         });
