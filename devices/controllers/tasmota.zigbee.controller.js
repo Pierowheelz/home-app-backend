@@ -4,6 +4,8 @@ const ventAutomation = require('../services/vent.automation.service');
  * Tasmota Zigbee bridge (`tele`/`stat` topic root `tasmota_zigbee`) with temperature sensors.
  *
  * Preferred input: `tele/.../SENSOR` JSON with `ZbReceived` (decoded Temperature/Humidity).
+ * Tuya TS0601-class sensors may instead report Tuya datapoints such as `EF00/0201` (temp),
+ * `EF00/0202` (humidity), and `EF00/0204` (battery) which we normalize here.
  *
  * Some setups only publish `stat/.../RESULT` with `{"ZbData":"ZbData 0xADDR,HEX..."}` — that string is not
  * human-readable; it is raw stack data. Where the HEX matches an Aqara-style report (marker `0E05010F00`),
@@ -59,6 +61,42 @@ function readPayloadMetrics(payload) {
         m.linkQuality = payload.LinkQuality;
     }
     return m;
+}
+
+/**
+ * Parse Tuya `EF00/xxxx` datapoints from a Zigbee payload object.
+ * Common TS0601 mappings used by these temperature/humidity sensors:
+ * - `0201`: temperature in deci-degrees C
+ * - `0202`: humidity in deci-percent RH
+ * - `0204`: battery percentage
+ * @param {Record<string, unknown>} payload Device object from `ZbReceived`.
+ * @returns {{ temperature?: number, humidity?: number, batteryLevel?: number }}
+ */
+function readTuyaEf00Metrics(payload) {
+    /** @type {{ temperature?: number, humidity?: number, batteryLevel?: number }} */
+    const out = {};
+    for (const [key, value] of Object.entries(payload)) {
+        const m = String(key).match(/^EF00\/([0-9A-F]{4})$/i);
+        if (!m || typeof value !== 'number' || !Number.isFinite(value)) {
+            continue;
+        }
+        const dp = m[1].toUpperCase();
+        if (dp === '0201') {
+            // Tuya temp datapoint is typically tenths of a degree.
+            out.temperature = value / 10;
+            continue;
+        }
+        if (dp === '0202') {
+            // Tuya humidity datapoint is typically tenths of a percent.
+            out.humidity = value / 10;
+            continue;
+        }
+        if (dp === '0204') {
+            // Battery often comes as percentage (0-100); clamp to keep sane values.
+            out.batteryLevel = Math.max(0, Math.min(100, Math.round(value)));
+        }
+    }
+    return out;
 }
 
 /**
@@ -305,14 +343,23 @@ const onMessage = (msgJson, topic = '') => {
         }
 
         const metrics = readPayloadMetrics(payload);
-        const temp = payload.Temperature;
-        if (typeof temp !== 'number') {
-            applyAuxiliaryMetrics(room, metrics);
+        const tuya = readTuyaEf00Metrics(payload);
+        const tempRaw = payload.Temperature;
+        const temperature = typeof tempRaw === 'number' ? tempRaw : tuya.temperature;
+        const humidity = typeof metrics.humidity === 'number' ? metrics.humidity : tuya.humidity;
+        const batteryLevel = typeof metrics.batteryLevel === 'number' ? metrics.batteryLevel : tuya.batteryLevel;
+        const auxMetrics = {
+            humidity,
+            batteryLevel,
+            linkQuality: metrics.linkQuality,
+        };
+        if (typeof temperature !== 'number') {
+            applyAuxiliaryMetrics(room, auxMetrics);
             continue;
         }
 
-        if (applyReading(room, temp, metrics.humidity, now, {
-            batteryLevel: metrics.batteryLevel,
+        if (applyReading(room, temperature, humidity, now, {
+            batteryLevel,
             linkQuality: metrics.linkQuality,
         })) {
             didApplyTemperature = true;
