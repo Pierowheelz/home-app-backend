@@ -39,6 +39,23 @@ let ventHvacActiveHoldUntilMs = /** @type {number|null} */ (null);
  */
 let ventHvacHeldMode = null;
 
+/**
+ * Latest reading from the HVAC fan power monitor (watts), or `null` if never received.
+ * @type {number|null}
+ */
+let hvacPowerW = null;
+
+/** Epoch ms when {@link hvacPowerW} was last updated. */
+let hvacPowerLastUpdateMs = /** @type {number|null} */ (null);
+
+/**
+ * Last temperature-derived non-idle controller mode (heating/cooling). Used to disambiguate
+ * mode while the HVAC is reported active by the power monitor but the controller temperature
+ * is inside the idle band (so we keep reporting whatever the system was last actively doing).
+ * @type {'cooling'|'heating'|null}
+ */
+let lastActiveTempBasedHvacMode = null;
+
 /** @type {Record<string, { targetC: number, untilMs: number }>} */
 const roomTargetOverrideByRoom = {};
 
@@ -71,6 +88,12 @@ const DEFAULTS = {
     pauseHrs: /** @type {Record<string, string>} */ ({}),
     /** IANA zone for {@link pauseHrs} (e.g. `Australia/Sydney`). */
     timezone: 'UTC',
+    /** Tasmota Zigbee short address (e.g. `0xCD0D`) of the HVAC fan power monitor. Empty disables power gating. */
+    hvacPowerSensorZigbeeAddr: '',
+    /** Watts at/above which the HVAC is considered active (heating or cooling). */
+    hvacPowerActiveThresholdW: 50,
+    /** A power reading older than this is ignored and {@link resolveVentAutomationHvacMode} falls back to temperature-only logic. */
+    hvacPowerStaleAfterMs: 5 * 60 * 1000,
 };
 
 /**
@@ -148,7 +171,34 @@ function getVentAutomationConfig() {
             typeof r.timezone === 'string' && r.timezone.trim() !== ''
                 ? r.timezone.trim()
                 : DEFAULTS.timezone,
+        hvacPowerSensorZigbeeAddr:
+            typeof r.hvacPowerSensorZigbeeAddr === 'string'
+                ? r.hvacPowerSensorZigbeeAddr.trim()
+                : DEFAULTS.hvacPowerSensorZigbeeAddr,
+        hvacPowerActiveThresholdW: finiteNumOrDefault(
+            r.hvacPowerActiveThresholdW, DEFAULTS.hvacPowerActiveThresholdW, { min: 0 },
+        ),
+        hvacPowerStaleAfterMs: finiteNumOrDefault(
+            r.hvacPowerStaleAfterMs, DEFAULTS.hvacPowerStaleAfterMs, { min: 0 },
+        ),
     };
+}
+
+/**
+ * True when {@link hvacPowerW} was updated within `cfg.hvacPowerStaleAfterMs` of `nowMs`
+ * and a power sensor address is configured.
+ * @param {ReturnType<typeof getVentAutomationConfig>} cfg
+ * @param {number} nowMs
+ * @returns {boolean}
+ */
+function hasFreshHvacPowerReading(cfg, nowMs) {
+    if (typeof cfg.hvacPowerSensorZigbeeAddr !== 'string' || cfg.hvacPowerSensorZigbeeAddr === '') {
+        return false;
+    }
+    if (!isFiniteNum(hvacPowerW) || !isFiniteNum(hvacPowerLastUpdateMs)) {
+        return false;
+    }
+    return (nowMs - hvacPowerLastUpdateMs) <= cfg.hvacPowerStaleAfterMs;
 }
 
 /**
@@ -330,6 +380,12 @@ function clearManualOverrideForRoom(room) {
  * Vent command for a room from temperature bands. Full open / full close use `ventOpenRaw` / `ventClosedRaw`;
  * the hysteresis band uses `hysteresisBandCmd` only when the temperature entered the band from the fully-open
  * side (directional hysteresis via `prevCmd`). When entering from the closed side the vent stays closed.
+ *
+ * Reopen hysteresis: once the vent has stepped down to `hysteresisBandCmd`, the room must exceed the target by
+ * at least `roomHysteresisC` (cooling) / fall at least `roomHysteresisC` below the target (heating) before the
+ * vent returns to `ventOpenRaw`. This prevents rapid 50%↔100% flapping when the temperature oscillates by a
+ * fraction of a degree around the target.
+ *
  * @param {'cooling'|'heating'} mode
  * @param {number} roomTempC
  * @param {number} coolTargetC
@@ -352,12 +408,14 @@ function ventTargetForRoom(
     ventClosedRaw,
     prevCmd,
 ) {
+    const atBand = prevCmd === hysteresisBandCmd;
     if (mode === 'cooling') {
         const lowC = coolTargetC - roomHysteresisC;
-        if (roomTempC > coolTargetC) {
+        const reopenThresholdC = atBand ? coolTargetC + roomHysteresisC : coolTargetC;
+        if (roomTempC > reopenThresholdC) {
             return ventOpenRaw;
         }
-        if (roomTempC >= lowC && roomTempC <= coolTargetC) {
+        if (roomTempC >= lowC) {
             if (prevCmd !== undefined && prevCmd !== ventOpenRaw && prevCmd !== hysteresisBandCmd) {
                 return ventClosedRaw;
             }
@@ -367,10 +425,11 @@ function ventTargetForRoom(
     }
     if (mode === 'heating') {
         const highH = heatTargetC + roomHysteresisC;
-        if (roomTempC < heatTargetC) {
+        const reopenThresholdC = atBand ? heatTargetC - roomHysteresisC : heatTargetC;
+        if (roomTempC < reopenThresholdC) {
             return ventOpenRaw;
         }
-        if (roomTempC >= heatTargetC && roomTempC <= highH) {
+        if (roomTempC <= highH) {
             if (prevCmd !== undefined && prevCmd !== ventOpenRaw && prevCmd !== hysteresisBandCmd) {
                 return ventClosedRaw;
             }
@@ -467,9 +526,21 @@ function getRoomTargetOverride(room, nowMs = Date.now()) {
 }
 
 /**
- * Controller-room band from temperature (single source of truth for hysteresis bands).
- * Idle is between `heatTargetC + roomHysteresisC` and `coolTargetC - roomHysteresisC`
- * (aligned with per-room `heatRoomTarget` / `coolRoomTarget`). Dashboard mode uses the same bands after enabled/temperature guards.
+ * Resolve the controller-room HVAC band.
+ *
+ * When a fresh reading from the configured fan power monitor is available
+ * (see {@link ingestHvacPowerReading}), the result is **gated by power**:
+ * - Power **&lt;** `hvacPowerActiveThresholdW` → always `idle`.
+ * - Power **≥** `hvacPowerActiveThresholdW` → always `heating` or `cooling` (never `idle`).
+ *   When the controller temperature is outside the idle band, that direction wins
+ *   (and is remembered as {@link lastActiveTempBasedHvacMode}). When the temperature
+ *   is inside the idle band, the last remembered active direction is returned (falling
+ *   back to the closest band edge if no prior active mode is known).
+ *
+ * Without a fresh power reading this falls back to the temperature-only behaviour:
+ * idle is between `heatTargetC + roomHysteresisC` and `coolTargetC - roomHysteresisC`,
+ * above `coolBandC` is `cooling`, below `heatBandC` is `heating`.
+ *
  * @param {number} controllerTempC
  * @param {number} heatTargetC
  * @param {number} coolTargetC
@@ -480,18 +551,46 @@ function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC
     const h = isFiniteNum(roomHysteresisC) ? roomHysteresisC : 0;
     const coolBandC = coolTargetC - h;
     const heatBandC = heatTargetC + h;
+    /** @type {'cooling'|'heating'|'idle'} */
+    let tempBasedMode;
     if (controllerTempC >= heatBandC && controllerTempC <= coolBandC) {
+        tempBasedMode = 'idle';
+    } else if (controllerTempC > coolBandC) {
+        tempBasedMode = 'cooling';
+    } else {
+        tempBasedMode = 'heating';
+    }
+    if (tempBasedMode !== 'idle') {
+        lastActiveTempBasedHvacMode = tempBasedMode;
+    }
+
+    const cfg = getVentAutomationConfig();
+    const nowMs = Date.now();
+    if (!hasFreshHvacPowerReading(cfg, nowMs)) {
+        return tempBasedMode;
+    }
+
+    if (/** @type {number} */ (hvacPowerW) < cfg.hvacPowerActiveThresholdW) {
         return 'idle';
     }
-    if (controllerTempC > coolBandC) {
-        return 'cooling';
+    if (tempBasedMode !== 'idle') {
+        return tempBasedMode;
     }
-    return 'heating';
+    if (lastActiveTempBasedHvacMode !== null) {
+        return lastActiveTempBasedHvacMode;
+    }
+    const midC = (heatTargetC + coolTargetC) / 2;
+    return controllerTempC >= midC ? 'cooling' : 'heating';
 }
 
 /**
  * When raw mode is heating or cooling, refreshes the hold window and returns that mode.
  * When raw mode is idle, returns the held mode until {@link ventHvacActiveHoldUntilMs}, then idle.
+ *
+ * If a fresh power reading is available, the time-based hold is bypassed entirely:
+ * the power monitor is authoritative for HVAC active/idle status, so a raw `idle`
+ * is returned immediately (held state is also cleared so it doesn't resurface later).
+ *
  * @param {'cooling'|'heating'|'idle'} rawMode
  * @param {number} holdAfterActiveMs Hold duration in ms; 0 disables idle hold.
  * @param {number} nowMs
@@ -506,12 +605,41 @@ function applyVentAutomationHvacIdleHold(rawMode, holdAfterActiveMs, nowMs) {
         ventHvacHeldMode = rawMode;
         return rawMode;
     }
+    if (hasFreshHvacPowerReading(getVentAutomationConfig(), nowMs)) {
+        ventHvacActiveHoldUntilMs = null;
+        ventHvacHeldMode = null;
+        return 'idle';
+    }
     if (holdMs > 0 && ventHvacHeldMode !== null && ventHvacActiveHoldUntilMs !== null && nowMs < ventHvacActiveHoldUntilMs) {
         return ventHvacHeldMode;
     }
     ventHvacActiveHoldUntilMs = null;
     ventHvacHeldMode = null;
     return 'idle';
+}
+
+/**
+ * Record a new reading from the HVAC fan power monitor (in watts). Triggers a fresh
+ * automation tick when the reported active/idle state flips so vents react immediately
+ * to the HVAC turning on or off.
+ *
+ * @param {number} watts Instantaneous power draw in W.
+ * @returns {Promise<void>}
+ */
+async function ingestHvacPowerReading(watts) {
+    if (!isFiniteNum(watts)) {
+        return;
+    }
+    const cfg = getVentAutomationConfig();
+    const nowMs = Date.now();
+    const wasActive = hasFreshHvacPowerReading(cfg, nowMs)
+        && /** @type {number} */ (hvacPowerW) >= cfg.hvacPowerActiveThresholdW;
+    hvacPowerW = watts;
+    hvacPowerLastUpdateMs = nowMs;
+    const isActive = watts >= cfg.hvacPowerActiveThresholdW;
+    if (wasActive !== isActive) {
+        await runAutomationTickFromSnapshot();
+    }
 }
 
 /**
@@ -780,6 +908,7 @@ async function getAutomationDashboard() {
         if (!a.success) failedActionsLast24h++;
     }
 
+    const powerFresh = hasFreshHvacPowerReading(cfg, nowDash);
     return {
         mode,
         automationEnabled: cfg.enabled,
@@ -791,6 +920,14 @@ async function getAutomationDashboard() {
             hysteresisClosePercent: cfg.hysteresisClosePercent,
             ventOpenRaw: cfg.ventOpenRaw,
             ventClosedRaw: cfg.ventClosedRaw,
+        },
+        hvacPower: {
+            thresholdW: cfg.hvacPowerActiveThresholdW,
+            powerW: isFiniteNum(hvacPowerW) ? hvacPowerW : null,
+            lastUpdateMs: hvacPowerLastUpdateMs,
+            fresh: powerFresh,
+            active: powerFresh && /** @type {number} */ (hvacPowerW) >= cfg.hvacPowerActiveThresholdW,
+            lastActiveTempBasedHvacMode,
         },
         rooms,
         lastAutomationEvaluationAt,
@@ -826,6 +963,7 @@ module.exports = {
     recordManualOverride,
     onSensorTelegram,
     ingestRoomReading,
+    ingestHvacPowerReading,
     getAutomationDashboard,
     setRoomTargetTemperatureTemporary,
     clearRoomTargetTemperatureOverride,

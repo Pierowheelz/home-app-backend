@@ -25,6 +25,46 @@ function getZigbeeSensorMap() {
 }
 
 /**
+ * Normalized Zigbee short address of the configured HVAC fan power monitor, or empty when not configured.
+ * @returns {string}
+ */
+function getHvacPowerSensorAddr() {
+    const raw = appconfig?.ventAutomation?.hvacPowerSensorZigbeeAddr;
+    if (typeof raw !== 'string' || raw.trim() === '') {
+        return '';
+    }
+    return normalizeZigbeeAddress(raw.trim());
+}
+
+/**
+ * Extract instantaneous power (W) from Tuya datapoints in a `ZbReceived` payload.
+ *
+ * The PJ-1203 / `_TZE284_cjbofhxw` energy monitor reports power on standard Tuya DP 19
+ * (`0x13`), type uint32 (`0x02`), in deci-watts — surfaced by Tasmota as
+ * `EF00/<type><dpid>` (e.g. `EF00/0213`). We accept any type byte for forward-compat.
+ *
+ * Note: some firmwares of this device only report voltage (via the manufacturer-specific
+ * cluster command `EF00?25`) and never emit a usable power datapoint. There is no way
+ * to derive watts from voltage alone, so those payloads are intentionally ignored.
+ *
+ * @param {Record<string, unknown>} payload Device object from `ZbReceived`.
+ * @returns {number|null} Watts, or `null` when no power datapoint is present.
+ */
+function readTuyaPowerWatts(payload) {
+    for (const [key, value] of Object.entries(payload)) {
+        const m = String(key).match(/^EF00\/([0-9A-F]{4})$/i);
+        if (!m || typeof value !== 'number' || !Number.isFinite(value)) {
+            continue;
+        }
+        const dpid = m[1].toUpperCase().slice(2, 4);
+        if (dpid === '13') {
+            return value / 10;
+        }
+    }
+    return null;
+}
+
+/**
  * @typedef {Object} ZigbeeSensorReading
  * @property {number|null} temperature Last temperature in °C, or null if never received.
  * @property {number|null} [humidity] Relative humidity % when reported.
@@ -335,10 +375,25 @@ const onMessage = (msgJson, topic = '') => {
     }
 
     const entries = collectZbEntries(msgJson);
+    const powerSensorAddr = getHvacPowerSensorAddr();
     for (const [addrRaw, payload] of entries) {
         const addr = normalizeZigbeeAddress(addrRaw);
+        if (payload === null || typeof payload !== 'object') {
+            continue;
+        }
+
+        if (powerSensorAddr !== '' && addr === powerSensorAddr) {
+            const watts = readTuyaPowerWatts(payload);
+            if (watts !== null) {
+                void ventAutomation.ingestHvacPowerReading(watts).catch((e) => {
+                    console.warn('Vent automation power ingest error:', e);
+                });
+            }
+            continue;
+        }
+
         const room = getZigbeeSensorMap()[addr];
-        if (!room || payload === null || typeof payload !== 'object') {
+        if (!room) {
             continue;
         }
 
