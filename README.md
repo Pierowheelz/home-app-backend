@@ -90,7 +90,7 @@ module.exports = {
 | `mqtt.url` | Broker host and port (e.g. `192.168.1.1:1883`). |
 | `mqtt.username` / `mqtt.password` | Broker auth (empty if anonymous). |
 | `environment` | Runtime label (e.g. `dev`, `prod`). |
-| `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, controller room name, vent HTTP base URL, open/closed command endpoints, room-to-vent index map, action log retention. |
+| `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, controller room name, vent HTTP base URL, open/closed command endpoints, room-to-vent index map, action log retention, and optional HVAC Zigbee power sensor (see below). |
 | `permissionLevels` | Numeric role flags (`NORMAL_USER`, `ADMIN_USER`). |
 | `users` | Seed users; `password` must be the server-encoded hash (see below). |
 
@@ -105,6 +105,31 @@ The password can be generated from the "Add User" route. POST to /users with the
 }
 ```
 The terminal will display the encoded password which you can add to your "users" key in env.config.js.
+
+### HVAC power sensor (Tuya Zigbee PJ-1203A)
+
+Vent automation can optionally gate itself on whether the HVAC is actively drawing power, using a Tuya Zigbee energy meter (TS0601 / `_TZE284_cjbofhxw`, a.k.a. PJ-1203A) clamped onto the HVAC feed and paired to a Tasmota Zigbee bridge. Relevant config keys in `ventAutomation`:
+
+| Key | Purpose |
+|-----|---------|
+| `hvacPowerSensorZigbeeAddr` | Short address of the meter on the Tasmota bridge (e.g. `0x98C5`). Empty string disables power-based gating. |
+| `hvacPowerActiveThresholdW` | Minimum instantaneous watts at which the HVAC is considered "running". |
+| `hvacPowerStaleAfterMs` | After this many ms without a fresh reading, power data is treated as unknown (fails open so automation still runs). |
+
+**One-time Tasmota bridge setup.** The `_TZE284_cjbofhxw` firmware will not emit any Tuya datapoints (voltage / current / power / kWh) until the coordinator acknowledges its `mcuGatewayConnectionStatus` heartbeats (Tuya cluster `0xEF00`, command `0x25`). Tasmota doesn't auto-respond to this command, so you must install a persistent rule on the bridge once — it survives reboots. Replace `0x98C5` with your meter's short address:
+
+```
+Rule1 ON ZbReceived#0x98C5#EF00?25 DO ZbSend {"Device":"0x98C5","Endpoint":1,"Send":"EF00!25/%value%0100"} ENDON
+Rule1 1
+```
+
+Verify on `tele/<bridge>/SENSOR` that you start seeing real datapoints alongside the `EF00?25` heartbeats:
+
+- `EF00/0213` — power, deci-watts (value ÷ 10 = W) — this is the one `vent.automation.service` consumes.
+- `EF00/0214` — voltage, deci-volts (value ÷ 10 = V).
+- `EF00/0212` — current, mA.
+
+If only `EF00?25` keeps arriving and nothing with a `/`, the rule hasn't taken effect; re-run the two commands above and confirm the bridge log shows `RUL: ZBRECEIVED#<addr>#EF00?25 performs "ZbSend ..."` on every heartbeat.
 
 ## Installation
 

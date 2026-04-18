@@ -43,9 +43,18 @@ function getHvacPowerSensorAddr() {
  * (`0x13`), type uint32 (`0x02`), in deci-watts — surfaced by Tasmota as
  * `EF00/<type><dpid>` (e.g. `EF00/0213`). We accept any type byte for forward-compat.
  *
- * Note: some firmwares of this device only report voltage (via the manufacturer-specific
- * cluster command `EF00?25`) and never emit a usable power datapoint. There is no way
- * to derive watts from voltage alone, so those payloads are intentionally ignored.
+ * Note on handshake (PJ-1203A `_TZE284_cjbofhxw` and kin): this firmware gates its Tuya DP
+ * reports behind a `mcuGatewayConnectionStatus` handshake. The MCU periodically emits Tuya
+ * cluster command `0x25` (surfaced by Tasmota as `EF00?25`, `?` = unrecognized command) with
+ * a 2-byte sequence payload, and will not send DP reports until each one is acknowledged.
+ * The reply — cluster `0xEF00`, command `0x25`, payload `<seq_bytes>0100` — must be sent by
+ * the Tasmota bridge itself via a persisted rule (Tasmota's generic ZCL sender is only
+ * reachable from the bridge, not from this backend). Expected bridge config:
+ *   Rule1 ON ZbReceived#<addr>#EF00?25 DO ZbSend {"Device":"<addr>","Endpoint":1,"Send":"EF00!25/%value%0100"} ENDON
+ *   Rule1 1
+ * Once the rule is active the device streams real DPs (DP `0x13` power in deci-watts,
+ * `0x14` voltage in deci-volts, `0x12` current in mA, etc.), which we decode here. The raw
+ * `EF00?25` heartbeats themselves carry only the rolling frame sequence and are ignored.
  *
  * @param {Record<string, unknown>} payload Device object from `ZbReceived`.
  * @returns {number|null} Watts, or `null` when no power datapoint is present.
