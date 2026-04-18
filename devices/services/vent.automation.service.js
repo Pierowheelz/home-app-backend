@@ -541,13 +541,23 @@ function getRoomTargetOverride(room, nowMs = Date.now()) {
  * idle is between `heatTargetC + roomHysteresisC` and `coolTargetC - roomHysteresisC`,
  * above `coolBandC` is `cooling`, below `heatBandC` is `heating`.
  *
+ * When the controller sits inside the idle band but power says HVAC is active, all
+ * supplied room sensors (whose `lastUpdateMs` is within `REDUNDANT_SENSOR_OFFLINE_MS`)
+ * are scanned: the one with the greatest margin outside the hysteresis-adjusted band
+ * (`heatBandC`..`coolBandC`) decides the direction (above → `cooling`, below →
+ * `heating`). Stale rows are skipped. If no fresh sensor is outside the band, the
+ * previously remembered active mode (or a mid-band fallback) is used.
+ *
  * @param {number} controllerTempC
  * @param {number} heatTargetC
  * @param {number} coolTargetC
  * @param {number} [roomHysteresisC=0]
+ * @param {Record<string, { temperature: number|null, lastUpdateMs?: number|null, humidity?: number|null }>} [sensorsByRoom]
+ *   Optional per-room sensor snapshot used to disambiguate direction when the
+ *   controller temperature is inside the idle band but HVAC power is active.
  * @returns {'cooling'|'heating'|'idle'}
  */
-function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC, roomHysteresisC = 0) {
+function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC, roomHysteresisC = 0, sensorsByRoom) {
     const h = isFiniteNum(roomHysteresisC) ? roomHysteresisC : 0;
     const coolBandC = coolTargetC - h;
     const heatBandC = heatTargetC + h;
@@ -576,6 +586,48 @@ function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC
     if (tempBasedMode !== 'idle') {
         return tempBasedMode;
     }
+
+    // Controller is inside the idle band but HVAC power is active: pick the
+    // direction from whichever room sensor sits furthest outside the band.
+    if (sensorsByRoom !== null && typeof sensorsByRoom === 'object') {
+        /** @type {number|null} */
+        let maxTempC = null;
+        /** @type {number|null} */
+        let minTempC = null;
+        for (const key of Object.keys(sensorsByRoom)) {
+            const row = sensorsByRoom[key];
+            if (row === null || typeof row !== 'object') {
+                continue;
+            }
+            const lastUpdateMs = row.lastUpdateMs;
+            if (!isFiniteNum(lastUpdateMs)
+                || nowMs - /** @type {number} */ (lastUpdateMs) > REDUNDANT_SENSOR_OFFLINE_MS) {
+                continue;
+            }
+            const t = readRowTemp(row);
+            if (!isFiniteNum(t)) {
+                continue;
+            }
+            const tempC = /** @type {number} */ (t);
+            if (maxTempC === null || tempC > maxTempC) {
+                maxTempC = tempC;
+            }
+            if (minTempC === null || tempC < minTempC) {
+                minTempC = tempC;
+            }
+        }
+        if (maxTempC !== null && minTempC !== null) {
+            const coolMargin = maxTempC - coolBandC;
+            const heatMargin = heatBandC - minTempC;
+            if (coolMargin > 0 && coolMargin >= heatMargin) {
+                return 'cooling';
+            }
+            if (heatMargin > 0 && heatMargin > coolMargin) {
+                return 'heating';
+            }
+        }
+    }
+
     if (lastActiveTempBasedHvacMode !== null) {
         return lastActiveTempBasedHvacMode;
     }
@@ -662,7 +714,7 @@ async function evaluateAndAct(sensorsByRoom) {
     }
 
     const { coolTargetC, heatTargetC, roomHysteresisC, hvacModeIdleHoldAfterActiveMs } = cfg;
-    const rawHvacMode = resolveVentAutomationHvacMode(stairTemp, heatTargetC, coolTargetC, roomHysteresisC);
+    const rawHvacMode = resolveVentAutomationHvacMode(stairTemp, heatTargetC, coolTargetC, roomHysteresisC, merged);
     const currHvacMode = applyVentAutomationHvacIdleHold(rawHvacMode, hvacModeIdleHoldAfterActiveMs, now);
     const prevHvacMode = lastVentAutomationHvacMode;
     if (
@@ -799,6 +851,7 @@ async function getAutomationDashboard() {
             cfg.heatTargetC,
             cfg.coolTargetC,
             cfg.roomHysteresisC,
+            merged,
         );
     }
     const mode = rawMode === 'idle' || rawMode === 'cooling' || rawMode === 'heating'
