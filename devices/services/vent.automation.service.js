@@ -86,6 +86,8 @@ const DEFAULTS = {
     }),
     /** Room label → `HH:mm-HH:mm` local window (may span midnight); evaluated in {@link getVentAutomationConfig}'s `timezone`. */
     pauseHrs: /** @type {Record<string, string>} */ ({}),
+    /** Per-room vent comfort band; keys match `roomVentMap`. Omitted fields fall back to global targets. */
+    roomTargets: /** @type {Record<string, { coolTargetC: number, heatTargetC: number }>} */ ({}),
     /** IANA zone for {@link pauseHrs} (e.g. `Australia/Sydney`). */
     timezone: 'UTC',
     /** Tasmota Zigbee short address (e.g. `0xCD0D`) of the HVAC fan power monitor. Empty disables power gating. */
@@ -141,10 +143,35 @@ function getVentAutomationConfig() {
         r.roomVentMap !== null && typeof r.roomVentMap === 'object' && !Array.isArray(r.roomVentMap)
             ? /** @type {Record<string, number>} */ (/** @type {unknown} */ (r.roomVentMap))
             : DEFAULTS.roomVentMap;
+    const coolTargetC = finiteNumOrDefault(r.coolTargetC, DEFAULTS.coolTargetC);
+    const heatTargetC = finiteNumOrDefault(r.heatTargetC, DEFAULTS.heatTargetC);
+    /** @type {Record<string, { coolTargetC: number, heatTargetC: number }>} */
+    const roomTargets = {};
+    const rawRoomTargets = r.roomTargets;
+    if (rawRoomTargets !== null && typeof rawRoomTargets === 'object' && !Array.isArray(rawRoomTargets)) {
+        for (const [k, v] of Object.entries(/** @type {Record<string, unknown>} */ (rawRoomTargets))) {
+            if (typeof k !== 'string' || k.trim() === '') {
+                continue;
+            }
+            if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+                continue;
+            }
+            const entry = /** @type {Record<string, unknown>} */ (v);
+            const hasCool = isFiniteNum(entry.coolTargetC);
+            const hasHeat = isFiniteNum(entry.heatTargetC);
+            if (!hasCool && !hasHeat) {
+                continue;
+            }
+            roomTargets[k.trim()] = {
+                coolTargetC: hasCool ? /** @type {number} */ (entry.coolTargetC) : coolTargetC,
+                heatTargetC: hasHeat ? /** @type {number} */ (entry.heatTargetC) : heatTargetC,
+            };
+        }
+    }
     return {
         enabled: typeof r.enabled === 'boolean' ? r.enabled : DEFAULTS.enabled,
-        coolTargetC: finiteNumOrDefault(r.coolTargetC, DEFAULTS.coolTargetC),
-        heatTargetC: finiteNumOrDefault(r.heatTargetC, DEFAULTS.heatTargetC),
+        coolTargetC,
+        heatTargetC,
         roomHysteresisC: finiteNumOrDefault(r.roomHysteresisC, DEFAULTS.roomHysteresisC),
         hvacModeIdleHoldAfterActiveMs: finiteNumOrDefault(
             r.hvacModeIdleHoldAfterActiveMs, DEFAULTS.hvacModeIdleHoldAfterActiveMs, { min: 0 },
@@ -181,6 +208,7 @@ function getVentAutomationConfig() {
         hvacPowerStaleAfterMs: finiteNumOrDefault(
             r.hvacPowerStaleAfterMs, DEFAULTS.hvacPowerStaleAfterMs, { min: 0 },
         ),
+        roomTargets,
     };
 }
 
@@ -442,6 +470,7 @@ function ventTargetForRoom(
 
 /**
  * Per-room comfort target for vent open/close (same semantics as global `coolTargetC`/`heatTargetC` for that room only).
+ * Priority: active {@link getRoomTargetOverride} → `ventAutomation.roomTargets[room]` → `globalTargets`.
  * @param {string} room
  * @param {number} nowMs
  * @param {{ coolTargetC: number, heatTargetC: number }} globalTargets
@@ -456,6 +485,10 @@ function effectiveRoomBandTargets(room, nowMs, globalTargets) {
         && nowMs < o.untilMs
     ) {
         return { coolTargetC: o.targetC, heatTargetC: o.targetC };
+    }
+    const rt = getVentAutomationConfig().roomTargets[room];
+    if (rt) {
+        return { coolTargetC: rt.coolTargetC, heatTargetC: rt.heatTargetC };
     }
     return globalTargets;
 }
@@ -903,6 +936,8 @@ async function getAutomationDashboard() {
             ventTargetOpenPercent,
             manualOverrideActive,
             manualOverrideUntilMs: manualTimerActive ? until : null,
+            effectiveCoolTargetC: eff.coolTargetC,
+            effectiveHeatTargetC: eff.heatTargetC,
             roomTargetOverrideC: rtOverride?.targetC ?? null,
             roomTargetOverrideUntilMs: rtOverride?.untilMs ?? null,
         });

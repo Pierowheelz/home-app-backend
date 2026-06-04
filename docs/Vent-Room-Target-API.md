@@ -20,7 +20,8 @@ Behavior (server-side, good for UI tooltips):
 - A **set** lasts **`ventAutomation.roomTargetOverrideDurationMs`** (default **20 hours**) from the successful request (`untilMs` in the response).
 - Overrides are stored **in memory**; a **process restart** clears them.
 - The server **clears every room override** when automation observes a direct transition **cooling ↔ heating** (based on the **controller room** temperature and global `coolTargetC` / `heatTargetC`). Transitions **to or from `idle`** do **not** clear overrides.
-- While an override is active for a room, **vent open/close decisions** for that room use the override as both band edges (see semantics below); **global** `targets` in the dashboard still show the config defaults.
+- **Per-room config** (`ventAutomation.roomTargets`) sets persistent `coolTargetC` / `heatTargetC` for vent-mapped rooms (overrides global defaults for vent math only; controller HVAC mode still uses global targets).
+- While a **temporary** override is active for a room, **vent open/close decisions** use the override as both band edges (see semantics below); **global** `targets` in the dashboard still show the global config defaults.
 
 ---
 
@@ -147,7 +148,7 @@ The handler and top-level shape are **unchanged**. Rows that already include ven
 
 These fields appear only on rooms that are in **`roomVentMap`** (the same rows that have `motorId`, `pos`, `wantOpen`, …). Rooms listed only from sensors **without** a vent assignment **do not** include these keys.
 
-**Semantics for `wantOpen`:** When `mode` is `cooling` or `heating`, `wantOpen` is computed using the **effective** band for that room — global `targets.coolTargetC` / `targets.heatTargetC` **or** the override `roomTargetOverrideC` for both edges, with `targets.roomHysteresisC` applied the same way as documented in [Vent-Dashboard.md](./Vent-Dashboard.md).
+**Semantics for `wantOpen`:** When `mode` is `cooling` or `heating`, `wantOpen` is computed using the **effective** band for that room (priority, highest first: temporary **`roomTargetOverrideC`** for both edges when active → **`roomTargets`** config for that room → global `targets`), with `targets.roomHysteresisC` applied the same way as documented in [Vent-Dashboard.md](./Vent-Dashboard.md). Use **`effectiveCoolTargetC`** / **`effectiveHeatTargetC`** on the room row for the resolved band.
 
 **Polling:** After `POST /vents/room-target`, refresh the dashboard (e.g. `GET /vents/actions`) to show updated `roomTargetOverride*` and `wantOpen`.
 
@@ -157,7 +158,7 @@ These fields appear only on rooms that are in **`roomVentMap`** (the same rows t
 
 1. **Room picker** — Options should match **`roomVentMap`** keys (or derive from `rooms[]` rows that have `motorId`).
 2. **Show expiry** — Use `roomTargetOverrideUntilMs` for a countdown or “until” label.
-3. **Global vs room** — The **`targets`** object on `GET /vents/actions` remains the **global** config; do not assume it reflects per-room overrides.
+3. **Global vs room** — The **`targets`** object on `GET /vents/actions` remains the **global** config; per-room bands are in **`effectiveCoolTargetC`** / **`effectiveHeatTargetC`** (config `roomTargets` and/or temporary override).
 4. **Mode flip** — If `mode` switches between cooling and heating, overrides may disappear on the next poll without an explicit cancel.
 
 ---

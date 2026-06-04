@@ -160,7 +160,9 @@ Each element combines **sensor** data with optional **vent** fields for rooms in
 | `wantOpen` | boolean \| null | Automation desire in current mode; `null` if mode idle/disabled/unknown or no room temp. |
 | `manualOverrideActive` | boolean | True while manual override window is active for this motor. |
 | `manualOverrideUntilMs` | number \| null | Epoch ms override expires; `null` if inactive. |
-| `roomTargetOverrideC` | number \| null | When present: active **automation** comfort override (°C) for this vent-mapped room; `null` if none. See [Vent-Room-Target-API.md](./Vent-Room-Target-API.md). |
+| `effectiveCoolTargetC` | number | Present on vent-mapped rows: resolved cooling edge for vent math (global → `roomTargets` → temporary override). |
+| `effectiveHeatTargetC` | number | Present on vent-mapped rows: resolved heating edge for vent math (same priority). |
+| `roomTargetOverrideC` | number \| null | When present: active **temporary** comfort override (°C) for this vent-mapped room; `null` if none. See [Vent-Room-Target-API.md](./Vent-Room-Target-API.md). |
 | `roomTargetOverrideUntilMs` | number \| null | When present: epoch ms when that override expires; `null` if inactive. |
 
 Rows are sorted by **`room`** alphabetically. The union of all Zigbee rooms and all `roomVentMap` keys appears, so you may show rooms without vents or vents waiting for first temperature.
@@ -210,7 +212,8 @@ Relevant keys in `env.config.js` (see `env.config.js.sample`):
 | Key | Role |
 |-----|------|
 | `enabled` | Master switch for automation. |
-| `coolTargetC` / `heatTargetC` | Band for **controller** room; outside → cooling/heating mode. |
+| `coolTargetC` / `heatTargetC` | Band for **controller** room; outside → cooling/heating mode. Also the default per-room vent band when `roomTargets` has no entry. |
+| `roomTargets` | Optional `{ "Room Name": { coolTargetC, heatTargetC } }` — persistent per-room vent bands (keys match `roomVentMap`; omitted fields inherit global targets). |
 | `roomHysteresisC` | Per-room threshold slack. |
 | `manualOverrideMs` | How long manual API moves block automation for that motor. |
 | `controllerRoomName` | Room label used as **controller** temperature (Zigbee map must match). Deprecated alias: `stairwellRoomName`. |
