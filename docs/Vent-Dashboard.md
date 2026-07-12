@@ -40,6 +40,7 @@ All routes require a JWT with normal user permission (see [API.md](./API.md)).
 | `GET` | `/vents` | Last **cached** raw payload from the vent device (no forced refresh). |
 | `GET` | `/vents/actions` | **Refreshes** vent status once, then returns **dashboard** + **action log** (includes optional per-room target override fields on vent-mapped rows; see [Vent-Room-Target-API.md](./Vent-Room-Target-API.md)). |
 | `POST` | `/vents/room-target` | JSON: set a **temporary (20h) per-room comfort target** for a `roomVentMap` key, or `{ room, cancel: true }` to clear. |
+| `POST` | `/vents/hvac-mode` | JSON: force **cooling** or **heating** temporarily when auto-detection is wrong, or `{ cancel: true }` to clear (see [Vent-Hvac-Mode-API.md](./Vent-Hvac-Mode-API.md)). |
 | `POST` | `/vents/:motorId/:percent` | Set motor `motorId` to `percent` (0–100). Starts a **manual override** window so automation does not fight the user. |
 
 ### When to call which endpoint
@@ -126,6 +127,8 @@ On success, the response merges:
 | `automationEnabled` | boolean | From `ventAutomation.enabled`. |
 | `controllerTempC` | number \| null | Temperature °C of the **controller room** (e.g. stairwell). |
 | `targets` | object \| null | `{ coolTargetC, heatTargetC, roomHysteresisC }`. |
+| `hvacModeOverride` | string \| null | `'cooling'` \| `'heating'` when a manual mode correction is active; else `null`. |
+| `hvacModeOverrideUntilMs` | number \| null | Epoch ms when the mode override expires; `null` if none. |
 | `rooms` | array | Per-room rows for the table (see below). |
 | `lastAutomationEvaluationAt` | number \| null | Epoch ms of last `evaluateAndAct` run while automation was enabled. |
 | `statistics` | object \| null | Rollups over the last 24h from the log. |
@@ -136,9 +139,11 @@ Resolved from **controller room** temperature vs. config (not from weather APIs)
 
 - **`disabled`** — automation toggled off.
 - **`unknown`** — no valid controller room temperature.
-- **`idle`** — `heatTargetC ≤ controllerTempC ≤ coolTargetC` (within band).
-- **`cooling`** — controller warmer than `coolTargetC`.
-- **`heating`** — controller cooler than `heatTargetC`.
+- **`idle`** — `heatTargetC ≤ controllerTempC ≤ coolTargetC` (within band), or HVAC power reports off.
+- **`cooling`** — controller warmer than `coolTargetC` (or forced via [manual override](./Vent-Hvac-Mode-API.md)).
+- **`heating`** — controller cooler than `heatTargetC` (or forced via manual override).
+
+When auto-detection picks the wrong direction (common while the controller is inside the idle band but the HVAC is drawing power), use `POST /vents/hvac-mode` to force the correct mode.
 
 Per-room vent logic uses **hysteresis**: cooling uses `coolTargetC - roomHysteresisC` as the threshold for “room too warm”; heating uses `heatTargetC + roomHysteresisC` for “room too cold”. The dashboard exposes **`wantOpen`** as the automation’s boolean intent for that room in the current mode (or `null` when not applicable).
 

@@ -144,6 +144,11 @@ exports.routesConfig = function (app) {
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         VentsController.setRoomTarget
     ]);
+    app.post('/vents/hvac-mode', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        VentsController.setHvacMode
+    ]);
     app.post('/vents/*/*', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),

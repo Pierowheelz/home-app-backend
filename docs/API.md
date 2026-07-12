@@ -628,12 +628,26 @@ const { status } = await api('/vents', { token: accessToken });
 - `success`, `error`
 - `actions` — array of log entries
 - `mode`, `automationEnabled`, `controllerRoom`, `controllerTempC`, `targets`, `rooms`, `lastAutomationEvaluationAt`, `statistics` (when automation runs)
+- optional `hvacModeOverride`, `hvacModeOverrideUntilMs` — see [Vent-Hvac-Mode-API.md](./Vent-Hvac-Mode-API.md)
 
 **Sample:**
 
 ```javascript
 const dashboard = await api('/vents/actions', { token: accessToken });
 ```
+
+### `POST /vents/hvac-mode`
+
+**Auth:** JWT + `NORMAL_USER`.
+
+**Body:** `{ "mode": "cooling" | "heating" }` to force HVAC mode for ~1h (or optional `duration` ms), or `{ "cancel": true }` to clear.
+
+**Responses:**
+
+- `200` — `{ "success": true, "error": "", "mode", "untilMs" }` (set) or `{ "success": true, "error": "", "cancel": true, "hadActiveOverride" }` (cancel)
+- `400` — `{ "success": false, "error": "invalid_mode" | "invalid_duration" }`
+
+Full contract: [Vent-Hvac-Mode-API.md](./Vent-Hvac-Mode-API.md).
 
 ### `POST /vents/:motorId/:percent`
 

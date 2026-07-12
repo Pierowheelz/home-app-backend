@@ -101,6 +101,68 @@ exports.setRoomTarget = async (req, res) => {
     });
 };
 
+/**
+ * POST JSON `{ mode: "cooling"|"heating", duration? }` — force HVAC mode, or `{ cancel: true }` to clear it.
+ * `duration` is optional milliseconds; when omitted, config default duration is used.
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @returns {Promise<void>}
+ */
+exports.setHvacMode = async (req, res) => {
+    const body = req.body !== null && typeof req.body === 'object' ? req.body : {};
+    const cancel = body.cancel === true;
+
+    if (cancel) {
+        const cleared = ventAutomation.clearHvacModeOverride();
+        try {
+            await ventAutomation.runAutomationTickFromSnapshot();
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn('setHvacMode (cancel) automation tick failed', msg);
+        }
+        res.status(200).send({
+            success: true,
+            error: '',
+            cancel: true,
+            hadActiveOverride: cleared.hadActiveOverride,
+        });
+        return;
+    }
+
+    const mode = body.mode;
+    const durationRaw = body.duration;
+    const hasDuration = Object.prototype.hasOwnProperty.call(body, 'duration');
+    const durationMs = hasDuration && typeof durationRaw === 'number' ? durationRaw : Number.NaN;
+    if (mode !== 'cooling' && mode !== 'heating') {
+        res.status(400).send({ success: false, error: 'invalid_mode' });
+        return;
+    }
+    if (hasDuration && (!Number.isFinite(durationMs) || durationMs < 0)) {
+        res.status(400).send({ success: false, error: 'invalid_duration' });
+        return;
+    }
+    const result = hasDuration
+        ? ventAutomation.setHvacModeOverride(mode, durationMs)
+        : ventAutomation.setHvacModeOverride(mode);
+    if (!result.ok) {
+        res.status(400).send({ success: false, error: result.error });
+        return;
+    }
+    try {
+        await ventAutomation.runAutomationTickFromSnapshot();
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('setHvacMode automation tick failed', msg);
+    }
+    res.status(200).send({
+        success: true,
+        error: '',
+        mode,
+        durationMs: hasDuration ? durationMs : undefined,
+        untilMs: result.untilMs,
+    });
+};
+
 exports.getActionLog = async (req, res) => {
     try {
         const dashboard = await ventAutomation.getAutomationDashboard();

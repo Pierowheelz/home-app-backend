@@ -59,6 +59,12 @@ let lastActiveTempBasedHvacMode = null;
 /** @type {Record<string, { targetC: number, untilMs: number }>} */
 const roomTargetOverrideByRoom = {};
 
+/**
+ * Manual HVAC mode correction (cooling ↔ heating) while auto-detection is wrong.
+ * @type {{ mode: 'cooling'|'heating', untilMs: number }|null}
+ */
+let hvacModeOverride = null;
+
 /** @type {Record<string, number>} Last automation-issued vent command per room (for directional hysteresis). */
 const lastAutomationCmdByRoom = {};
 
@@ -75,6 +81,8 @@ const DEFAULTS = {
     manualOverrideMs: 3600000,
     /** How long {@link setRoomTargetTemperatureTemporary} keeps a per-room target active. */
     roomTargetOverrideDurationMs: 20 * 60 * 60 * 1000,
+    /** How long {@link setHvacModeOverride} keeps a manual cooling/heating correction active. */
+    hvacModeOverrideDurationMs: 60 * 60 * 1000,
     controllerRoomName: 'Stairwell',
     ventOpenRaw: 100,
     ventClosedRaw: 0,
@@ -179,6 +187,9 @@ function getVentAutomationConfig() {
         manualOverrideMs: finiteNumOrDefault(r.manualOverrideMs, DEFAULTS.manualOverrideMs, { min: 0 }),
         roomTargetOverrideDurationMs: finiteNumOrDefault(
             r.roomTargetOverrideDurationMs, DEFAULTS.roomTargetOverrideDurationMs, { min: 0 },
+        ),
+        hvacModeOverrideDurationMs: finiteNumOrDefault(
+            r.hvacModeOverrideDurationMs, DEFAULTS.hvacModeOverrideDurationMs, { min: 0 },
         ),
         controllerRoomName:
             typeof r.controllerRoomName === 'string' && r.controllerRoomName.trim() !== ''
@@ -559,6 +570,53 @@ function getRoomTargetOverride(room, nowMs = Date.now()) {
 }
 
 /**
+ * @param {number} [nowMs]
+ * @returns {{ mode: 'cooling'|'heating', untilMs: number }|null}
+ */
+function getHvacModeOverride(nowMs = Date.now()) {
+    if (
+        hvacModeOverride === null
+        || (hvacModeOverride.mode !== 'cooling' && hvacModeOverride.mode !== 'heating')
+        || !isFiniteNum(hvacModeOverride.untilMs)
+        || nowMs >= hvacModeOverride.untilMs
+    ) {
+        return null;
+    }
+    return { mode: hvacModeOverride.mode, untilMs: hvacModeOverride.untilMs };
+}
+
+/**
+ * Force HVAC mode to `cooling` or `heating` for a temporary duration (corrects bad auto-detection).
+ * When `durationMs` is omitted, `hvacModeOverrideDurationMs` from config is used.
+ * @param {'cooling'|'heating'} mode
+ * @param {number} [durationMs]
+ * @returns {{ ok: true, untilMs: number } | { ok: false, error: string }}
+ */
+function setHvacModeOverride(mode, durationMs) {
+    if (mode !== 'cooling' && mode !== 'heating') {
+        return { ok: false, error: 'invalid_mode' };
+    }
+    const cfg = getVentAutomationConfig();
+    const overrideDurationMs = isFiniteNum(durationMs) && durationMs >= 0
+        ? durationMs
+        : cfg.hvacModeOverrideDurationMs;
+    const untilMs = Date.now() + overrideDurationMs;
+    hvacModeOverride = { mode, untilMs };
+    lastActiveTempBasedHvacMode = mode;
+    return { ok: true, untilMs };
+}
+
+/**
+ * Drop any stored HVAC mode override so auto-detection applies again.
+ * @returns {{ ok: true, hadActiveOverride: boolean }}
+ */
+function clearHvacModeOverride() {
+    const hadActiveOverride = getHvacModeOverride() !== null;
+    hvacModeOverride = null;
+    return { ok: true, hadActiveOverride };
+}
+
+/**
  * Resolve the controller-room HVAC band.
  *
  * When a fresh reading from the configured fan power monitor is available
@@ -581,6 +639,10 @@ function getRoomTargetOverride(room, nowMs = Date.now()) {
  * `heating`). Stale rows are skipped. If no fresh sensor is outside the band, the
  * previously remembered active mode (or a mid-band fallback) is used.
  *
+ * An active {@link setHvacModeOverride} forces `cooling` or `heating` (and updates
+ * {@link lastActiveTempBasedHvacMode}) except when a fresh power reading reports the
+ * HVAC as off — then `idle` still wins so vents are not driven while the unit is off.
+ *
  * @param {number} controllerTempC
  * @param {number} heatTargetC
  * @param {number} coolTargetC
@@ -594,6 +656,9 @@ function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC
     const h = isFiniteNum(roomHysteresisC) ? roomHysteresisC : 0;
     const coolBandC = coolTargetC - h;
     const heatBandC = heatTargetC + h;
+    const cfg = getVentAutomationConfig();
+    const nowMs = Date.now();
+    const override = getHvacModeOverride(nowMs);
     /** @type {'cooling'|'heating'|'idle'} */
     let tempBasedMode;
     if (controllerTempC >= heatBandC && controllerTempC <= coolBandC) {
@@ -603,18 +668,24 @@ function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC
     } else {
         tempBasedMode = 'heating';
     }
-    if (tempBasedMode !== 'idle') {
+    if (tempBasedMode !== 'idle' && override === null) {
         lastActiveTempBasedHvacMode = tempBasedMode;
     }
 
-    const cfg = getVentAutomationConfig();
-    const nowMs = Date.now();
     if (!hasFreshHvacPowerReading(cfg, nowMs)) {
+        if (override !== null) {
+            lastActiveTempBasedHvacMode = override.mode;
+            return override.mode;
+        }
         return tempBasedMode;
     }
 
     if (/** @type {number} */ (hvacPowerW) < cfg.hvacPowerActiveThresholdW) {
         return 'idle';
+    }
+    if (override !== null) {
+        lastActiveTempBasedHvacMode = override.mode;
+        return override.mode;
     }
     if (tempBasedMode !== 'idle') {
         return tempBasedMode;
@@ -997,6 +1068,7 @@ async function getAutomationDashboard() {
     }
 
     const powerFresh = hasFreshHvacPowerReading(cfg, nowDash);
+    const modeOverride = getHvacModeOverride(nowDash);
     return {
         mode,
         automationEnabled: cfg.enabled,
@@ -1017,6 +1089,8 @@ async function getAutomationDashboard() {
             active: powerFresh && /** @type {number} */ (hvacPowerW) >= cfg.hvacPowerActiveThresholdW,
             lastActiveTempBasedHvacMode,
         },
+        hvacModeOverride: modeOverride?.mode ?? null,
+        hvacModeOverrideUntilMs: modeOverride?.untilMs ?? null,
         rooms,
         lastAutomationEvaluationAt,
         statistics: {
@@ -1055,5 +1129,7 @@ module.exports = {
     getAutomationDashboard,
     setRoomTargetTemperatureTemporary,
     clearRoomTargetTemperatureOverride,
+    setHvacModeOverride,
+    clearHvacModeOverride,
     runAutomationTickFromSnapshot,
 };
