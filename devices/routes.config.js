@@ -5,6 +5,8 @@ const LightsController = require('./controllers/lights.controller');
 const VentsController = require('./controllers/vents.controller');
 const ServerController = require('./controllers/server.controller');
 const TasmotaZigbeeController = require('./controllers/tasmota.zigbee.controller');
+const TasmotaZigbeeBulbsController = require('./controllers/tasmota.zigbee.bulbs.controller');
+const TasmotaZigbeeControlsController = require('./controllers/tasmota.zigbee.controls.controller');
 
 const PermissionMiddleware = require('../common/middlewares/auth.permission.middleware');
 const ValidationMiddleware = require('../common/middlewares/auth.validation.middleware');
@@ -18,6 +20,8 @@ GarageController.attachMqtt( mqttSession );
 SpeakersController.attachMqtt( mqttSession );
 ServerController.attachMqtt( mqttSession );
 TasmotaZigbeeController.attachMqtt( mqttSession );
+TasmotaZigbeeBulbsController.attachMqtt( mqttSession );
+TasmotaZigbeeControlsController.attachMqtt( mqttSession );
 mqttSession.connect();
 
 exports.routesConfig = function (app) {
@@ -78,6 +82,28 @@ exports.routesConfig = function (app) {
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         TasmotaZigbeeController.getState
+    ]);
+
+    // Zigbee bulbs (Tasmota bridge, fixture-level)
+    app.get('/bulbs', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        TasmotaZigbeeBulbsController.listFixtures
+    ]);
+    app.get('/bulbs/:fixtureId', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.minimumPermissionLevelRequired(USER),
+        TasmotaZigbeeBulbsController.getFixture
+    ]);
+    app.post('/bulbs/:fixtureId/reset', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        TasmotaZigbeeBulbsController.resetFixture
+    ]);
+    app.post('/bulbs/:fixtureId', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        TasmotaZigbeeBulbsController.setFixture
     ]);
     
     // Lights

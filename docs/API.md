@@ -367,6 +367,195 @@ const temps = await api('/temperatures', { token: accessToken });
 
 ---
 
+## Devices — Zigbee bulbs (Tasmota / fixtures)
+
+Fixture-level control of Zigbee Light Link bulbs on the same `tasmota_zigbee` bridge. Schedule and manual override are **per fixture**; individual bulbs only report `deviceState`. At fixture brightness `1` with two or more bulbs, the secondary bulb is turned off to further dim the fixture.
+
+Config lives under `bulbAutomation` in `env.config.js` (`fixtures`, per-fixture `schedules`, `manualOverrideMs`, `timezone`). Example fixture id: `bathroom` with bulbs `0x16EE` (primary) and `0x2DDC` (secondary; off at 1% brightness).
+
+### `GET /bulbs`
+
+**Auth:** JWT + `NORMAL_USER`.
+
+**Behavior:** Returns all fixtures. Runs reconcile-on-read (pushes `ZbSend` when cached device state mismatches desired).
+
+**Response `200`:**
+
+```json
+{
+  "device": "tasmota_zigbee",
+  "fixtures": [
+    {
+      "fixtureId": "bathroom",
+      "bulbs": ["0x16EE", "0x2DDC"],
+      "enabled": true,
+      "targetState": { "brightness": 80, "colour": 5500 },
+      "overrideState": null,
+      "overrideExpiry": null,
+      "desiredState": { "brightness": 80, "colour": 5500 },
+      "deviceStateByBulb": {
+        "0x16EE": {
+          "brightness": 80,
+          "colour": 5500,
+          "power": "on",
+          "lastUpdateMs": 1712000000000,
+          "linkQuality": 100
+        },
+        "0x2DDC": {
+          "brightness": null,
+          "colour": null,
+          "power": null,
+          "lastUpdateMs": null,
+          "linkQuality": null
+        }
+      },
+      "lastPushAtMs": 1712000001000
+    }
+  ]
+}
+```
+
+`colour: 0` means red (RGB mode); any positive value is Kelvin (white CT).
+
+**Sample:**
+
+```javascript
+const { fixtures } = await api('/bulbs', { token: accessToken });
+```
+
+### `GET /bulbs/:fixtureId`
+
+**Auth:** JWT + `NORMAL_USER`.
+
+**Behavior:** One fixture snapshot; reconcile-on-read.
+
+**Responses:**
+
+- `200` — same object shape as one entry in `fixtures` above
+- `404` — `{ "error": "unknown_fixture" }`
+
+**Sample:**
+
+```javascript
+const fixture = await api('/bulbs/bathroom', { token: accessToken });
+```
+
+### `POST /bulbs/:fixtureId`
+
+**Auth:** JWT + only user id `0` (`onlyUserCanDoThisAction(0)`).
+
+**Body:**
+
+```json
+{
+  "brightness": 40,
+  "colour": 4000
+}
+```
+
+- `brightness` — integer `0`–`100`
+- `colour` — `0` for red RGB, or Kelvin `2000`–`6500` for white CT
+
+**Behavior:** Sets a fixture-level `overrideState` for `manualOverrideMs` (default 90 minutes), then pushes commands immediately. After expiry, automation returns to that fixture’s schedule `targetState`.
+
+**Responses:**
+
+- `200` — updated fixture snapshot
+- `400` — `{ "error": "invalid_brightness" | "invalid_colour", "message": "..." }`
+- `404` — `{ "error": "unknown_fixture" }`
+
+**Sample:**
+
+```javascript
+await api('/bulbs/bathroom', {
+  method: 'POST',
+  token: accessToken,
+  body: { brightness: 1, colour: 0 },
+});
+```
+
+### `POST /bulbs/:fixtureId/reset`
+
+**Auth:** JWT + only user id `0` (`onlyUserCanDoThisAction(0)`).
+
+**Behavior:** Clears that fixture’s `overrideState` / `overrideExpiry`, refreshes `targetState` from the fixture’s schedule, then pushes commands for the schedule desired immediately.
+
+**Responses:**
+
+- `200` — fixture snapshot (`overrideState` / `overrideExpiry` null; `desiredState` matches `targetState`)
+- `404` — `{ "error": "unknown_fixture" }`
+
+**Sample:**
+
+```javascript
+await api('/bulbs/bathroom/reset', { method: 'POST', token: accessToken });
+```
+
+---
+
+## Devices — Zigbee remotes (buttons / dimmers)
+
+Config-driven Zigbee remotes on the same `tasmota_zigbee` bridge. There is **no HTTP API**; presses and turns are handled over MQTT when `zigbeeControls` is enabled in `env.config.js`.
+
+### Config (`zigbeeControls`)
+
+| Field | Meaning |
+|-------|---------|
+| `enabled` | Master switch (default `true` when the block exists) |
+| `dimmerStepPerPercent` | DimmerStep units per 1% brightness (default `10`; ~1000 units ≈ one revolution) |
+| `colorTempFullScaleSteps` | Hardware steps for a full colour-axis revolution (default `1000`) |
+| `devices` | Map of Zigbee short address → device spec |
+
+**Device types**
+
+- `button` — press keys only: `single` / `double` / `long`
+- `dimmer` — press keys plus relative turn control via `fixtureId`
+
+**Press action objects** (exactly one per key; omit unused keys):
+
+| `type` | Fields | Effect |
+|--------|--------|--------|
+| `bulb` | `fixtureId`, `brightness` (1–100), `colour` (`0` = red, or Kelvin) | Manual fixture override + immediate push |
+| `bulbReset` | `fixtureId` | Clear override → schedule + immediate push |
+| `vent` | `percent` (0–100) and either `motorId` or `room` (`roomVentMap` label; `motorId` wins if both set) | Set vent position + record manual override |
+
+**Event mapping**
+
+| Telegram | Event |
+|----------|--------|
+| `LidlPower` 0 / 1 / 2 | `single` / `double` / `long` (e.g. Lidl button `0xFB8C`) |
+| `Power: 2` | `single` (dimmer press, e.g. `0x891A`) |
+| `DimmerStepUp` / `DimmerStepDown` | Relative brightness on the dimmer’s `fixtureId` (clamped **1–100**, never 0) |
+| `ColorTempStepUp` / `ColorTempStepDown` | Relative colour on that fixture |
+
+**Colour axis (hold + turn):** one full revolution spans virtual positions `0…3310` — `0–10` → red (`colour: 0`), then Kelvin `2700–6000`. Turning down through 2700K enters red; turning up from red exits into 2700K. Rapid step telegrams are coalesced (~120ms) into one override push.
+
+**Example**
+
+```js
+"zigbeeControls": {
+  "enabled": true,
+  "dimmerStepPerPercent": 10,
+  "colorTempFullScaleSteps": 1000,
+  "devices": {
+    "0xFB8C": {
+      "type": "button",
+      "single": { "type": "vent", "room": "Peter's Room", "percent": 100 },
+      "double": { "type": "vent", "motorId": 0, "percent": 50 },
+      "long": { "type": "vent", "room": "Peter's Room", "percent": 0 }
+    },
+    "0x891A": {
+      "type": "dimmer",
+      "fixtureId": "bathroom",
+      "single": { "type": "bulb", "fixtureId": "bathroom", "brightness": 1, "colour": 3000 },
+      "long": { "type": "bulbReset", "fixtureId": "bathroom" }
+    }
+  }
+}
+```
+
+---
+
 ## Devices — Lights (eWelink)
 
 Path suffix is taken from the URL **after the first path segment** (device **name** for lookup; device **id** string for status and power). Use `encodeURIComponent` for names with spaces.
