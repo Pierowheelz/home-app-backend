@@ -168,6 +168,57 @@ function getWallClockMinutesInTimeZone(date, timeZone) {
 }
 
 /**
+ * @param {Date} date
+ * @param {string} timeZone IANA time zone name
+ * @returns {number|null} Calendar month 1–12, or `null` if `timeZone` is invalid for `Intl`
+ */
+function getCalendarMonthInTimeZone(date, timeZone) {
+    try {
+        const dtf = new Intl.DateTimeFormat('en-GB', {
+            timeZone,
+            month: 'numeric',
+        });
+        const parts = dtf.formatToParts(date);
+        const monthPart = parts.find((p) => p.type === 'month');
+        if (!monthPart) {
+            return null;
+        }
+        const month = Number(monthPart.value);
+        if (!Number.isInteger(month) || month < 1 || month > 12) {
+            return null;
+        }
+        return month;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Normalize a config list of calendar months to unique integers 1–12.
+ * @param {unknown} raw
+ * @returns {number[]}
+ */
+function normalizedMonthList(raw) {
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+    /** @type {number[]} */
+    const out = [];
+    const seen = new Set();
+    for (const v of raw) {
+        const n = typeof v === 'number'
+            ? v
+            : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+        if (!Number.isInteger(n) || n < 1 || n > 12 || seen.has(n)) {
+            continue;
+        }
+        seen.add(n);
+        out.push(n);
+    }
+    return out;
+}
+
+/**
  * @param {Record<string, number>} roomVentMap
  * @param {number|string} motorId
  * @returns {string|null}
@@ -195,5 +246,7 @@ module.exports = {
     normalizedPauseHrsMap,
     parsePauseHrsWindow,
     getWallClockMinutesInTimeZone,
+    getCalendarMonthInTimeZone,
+    normalizedMonthList,
     roomNameForMotorInMap,
 };

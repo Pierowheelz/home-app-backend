@@ -9,6 +9,8 @@ const {
     normalizedPauseHrsMap,
     parsePauseHrsWindow,
     getWallClockMinutesInTimeZone,
+    getCalendarMonthInTimeZone,
+    normalizedMonthList,
     roomNameForMotorInMap,
     isRedundantAltSensorLabel,
     primaryRoomFromRedundantAltLabel,
@@ -104,6 +106,16 @@ const DEFAULTS = {
     hvacPowerActiveThresholdW: 50,
     /** A power reading older than this is ignored and {@link resolveVentAutomationHvacMode} falls back to temperature-only logic. */
     hvacPowerStaleAfterMs: 5 * 60 * 1000,
+    /**
+     * Calendar months (1–12, in {@link timezone}) that force HVAC mode to `heating`.
+     * Empty → no seasonal force; months absent from both lists fall back to temperature detection.
+     */
+    hvacHeatingMonths: /** @type {number[]} */ ([]),
+    /**
+     * Calendar months (1–12, in {@link timezone}) that force HVAC mode to `cooling`.
+     * Empty → no seasonal force; months absent from both lists fall back to temperature detection.
+     */
+    hvacCoolingMonths: /** @type {number[]} */ ([]),
 };
 
 /**
@@ -219,6 +231,8 @@ function getVentAutomationConfig() {
         hvacPowerStaleAfterMs: finiteNumOrDefault(
             r.hvacPowerStaleAfterMs, DEFAULTS.hvacPowerStaleAfterMs, { min: 0 },
         ),
+        hvacHeatingMonths: normalizedMonthList(r.hvacHeatingMonths),
+        hvacCoolingMonths: normalizedMonthList(r.hvacCoolingMonths),
         roomTargets,
     };
 }
@@ -617,6 +631,39 @@ function clearHvacModeOverride() {
 }
 
 /**
+ * Forced HVAC mode from `hvacHeatingMonths` / `hvacCoolingMonths` for the current
+ * calendar month in `cfg.timezone`. Returns `null` when lists are empty, the month
+ * is absent from both, the month appears in both (ambiguous), or the timezone is invalid.
+ *
+ * @param {ReturnType<typeof getVentAutomationConfig>} cfg
+ * @param {number} nowMs
+ * @returns {'cooling'|'heating'|null}
+ */
+function resolveSeasonalHvacMode(cfg, nowMs) {
+    const heatingMonths = cfg.hvacHeatingMonths;
+    const coolingMonths = cfg.hvacCoolingMonths;
+    if (heatingMonths.length === 0 && coolingMonths.length === 0) {
+        return null;
+    }
+    const month = getCalendarMonthInTimeZone(new Date(nowMs), cfg.timezone);
+    if (month === null) {
+        return null;
+    }
+    const inHeating = heatingMonths.includes(month);
+    const inCooling = coolingMonths.includes(month);
+    if (inHeating && inCooling) {
+        return null;
+    }
+    if (inHeating) {
+        return 'heating';
+    }
+    if (inCooling) {
+        return 'cooling';
+    }
+    return null;
+}
+
+/**
  * Resolve the controller-room HVAC band.
  *
  * When a fresh reading from the configured fan power monitor is available
@@ -643,6 +690,11 @@ function clearHvacModeOverride() {
  * {@link lastActiveTempBasedHvacMode}) except when a fresh power reading reports the
  * HVAC as off — then `idle` still wins so vents are not driven while the unit is off.
  *
+ * When no manual override is active, {@link resolveSeasonalHvacMode} may force
+ * `heating` / `cooling` from `hvacHeatingMonths` / `hvacCoolingMonths` for the current
+ * calendar month (in `timezone`). Months not listed (or empty lists) fall back to
+ * temperature-based detection.
+ *
  * @param {number} controllerTempC
  * @param {number} heatTargetC
  * @param {number} coolTargetC
@@ -659,6 +711,7 @@ function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC
     const cfg = getVentAutomationConfig();
     const nowMs = Date.now();
     const override = getHvacModeOverride(nowMs);
+    const seasonalMode = resolveSeasonalHvacMode(cfg, nowMs);
     /** @type {'cooling'|'heating'|'idle'} */
     let tempBasedMode;
     if (controllerTempC >= heatBandC && controllerTempC <= coolBandC) {
@@ -668,7 +721,7 @@ function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC
     } else {
         tempBasedMode = 'heating';
     }
-    if (tempBasedMode !== 'idle' && override === null) {
+    if (tempBasedMode !== 'idle' && override === null && seasonalMode === null) {
         lastActiveTempBasedHvacMode = tempBasedMode;
     }
 
@@ -676,6 +729,10 @@ function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC
         if (override !== null) {
             lastActiveTempBasedHvacMode = override.mode;
             return override.mode;
+        }
+        if (seasonalMode !== null) {
+            lastActiveTempBasedHvacMode = seasonalMode;
+            return seasonalMode;
         }
         return tempBasedMode;
     }
@@ -686,6 +743,10 @@ function resolveVentAutomationHvacMode(controllerTempC, heatTargetC, coolTargetC
     if (override !== null) {
         lastActiveTempBasedHvacMode = override.mode;
         return override.mode;
+    }
+    if (seasonalMode !== null) {
+        lastActiveTempBasedHvacMode = seasonalMode;
+        return seasonalMode;
     }
     if (tempBasedMode !== 'idle') {
         return tempBasedMode;
