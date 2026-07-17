@@ -75,6 +75,126 @@ function parseMotorId(raw) {
 }
 
 /**
+ * @typedef {{ motorId: number, motorControllerId: number, externalId: number }} RoomVentEntry
+ */
+
+/**
+ * Parse a `roomVentMap` value: number (legacy) or `{ motorId, motorControllerId?, externalId? }`.
+ * @param {unknown} raw
+ * @returns {RoomVentEntry|null}
+ */
+function parseRoomVentEntry(raw) {
+    if (typeof raw === 'number' || typeof raw === 'string') {
+        const motorId = parseMotorId(raw);
+        if (motorId === null || !Number.isInteger(motorId) || motorId < 0) {
+            return null;
+        }
+        return { motorId, motorControllerId: 0, externalId: motorId };
+    }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+        return null;
+    }
+    const o = /** @type {Record<string, unknown>} */ (raw);
+    const motorId = parseMotorId(o.motorId);
+    if (motorId === null || !Number.isInteger(motorId) || motorId < 0) {
+        return null;
+    }
+    let motorControllerId = 0;
+    if (Object.prototype.hasOwnProperty.call(o, 'motorControllerId')) {
+        const c = parseMotorId(o.motorControllerId);
+        if (c === null || !Number.isInteger(c) || c < 0) {
+            return null;
+        }
+        motorControllerId = c;
+    }
+    let externalId = motorId;
+    if (Object.prototype.hasOwnProperty.call(o, 'externalId')) {
+        const e = parseMotorId(o.externalId);
+        if (e === null || !Number.isInteger(e) || e < 0) {
+            return null;
+        }
+        externalId = e;
+    }
+    return { motorId, motorControllerId, externalId };
+}
+
+/**
+ * Normalize `roomVentMap` to room → {@link RoomVentEntry}. Warns on duplicate `externalId`.
+ * @param {unknown} raw
+ * @param {Record<string, number|RoomVentEntry>} [fallback]
+ * @returns {Record<string, RoomVentEntry>}
+ */
+function normalizeRoomVentMap(raw, fallback) {
+    const source =
+        raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+            ? /** @type {Record<string, unknown>} */ (raw)
+            : (fallback ?? {});
+    /** @type {Record<string, RoomVentEntry>} */
+    const out = {};
+    /** @type {Map<number, string>} */
+    const externalIdOwner = new Map();
+    for (const [roomRaw, v] of Object.entries(source)) {
+        if (typeof roomRaw !== 'string' || roomRaw.trim() === '') {
+            continue;
+        }
+        const room = roomRaw.trim();
+        const entry = parseRoomVentEntry(v);
+        if (entry === null) {
+            continue;
+        }
+        const prior = externalIdOwner.get(entry.externalId);
+        if (prior !== undefined && prior !== room) {
+            console.warn(
+                `ventAutomation.roomVentMap: duplicate externalId ${entry.externalId} for "${room}" and "${prior}"`,
+            );
+        }
+        externalIdOwner.set(entry.externalId, room);
+        out[room] = entry;
+    }
+    return out;
+}
+
+/**
+ * Normalize `ventBaseUrl` string or string[] to a non-empty list (no trailing slash).
+ * @param {unknown} raw
+ * @param {string} [defaultUrl]
+ * @returns {string[]}
+ */
+function normalizeVentBaseUrls(raw, defaultUrl = 'http://192.168.2.110') {
+    /** @type {string[]} */
+    const urls = [];
+    if (typeof raw === 'string' && raw.trim() !== '') {
+        urls.push(raw.trim().replace(/\/$/, ''));
+    } else if (Array.isArray(raw)) {
+        for (const item of raw) {
+            if (typeof item === 'string' && item.trim() !== '') {
+                urls.push(item.trim().replace(/\/$/, ''));
+            }
+        }
+    }
+    if (urls.length === 0) {
+        return [defaultUrl.replace(/\/$/, '')];
+    }
+    return urls;
+}
+
+/**
+ * Find a normalized roomVentMap entry by external id.
+ * @param {Record<string, RoomVentEntry>} roomVentMap
+ * @param {number|string} externalId
+ * @returns {{ room: string, entry: RoomVentEntry }|null}
+ */
+function findRoomVentEntryByExternalId(roomVentMap, externalId) {
+    const want = String(externalId);
+    for (const [room, entry] of Object.entries(roomVentMap)) {
+        if (String(entry.externalId) === want) {
+            return { room, entry };
+        }
+    }
+    return null;
+}
+
+/**
  * Extract a finite temperature from a sensor row, or null.
  * @param {{ temperature?: number|null }|null|undefined} row
  * @returns {number|null}
@@ -219,19 +339,17 @@ function normalizedMonthList(raw) {
 }
 
 /**
- * @param {Record<string, number>} roomVentMap
- * @param {number|string} motorId
+ * Match on externalId (API / dashboard motor id).
+ * @param {Record<string, RoomVentEntry|number>} roomVentMap
+ * @param {number|string} externalId
  * @returns {string|null}
  */
-function roomNameForMotorInMap(roomVentMap, motorId) {
-    const want = String(motorId);
-    for (const [room, raw] of Object.entries(roomVentMap)) {
-        const id = parseMotorId(raw);
-        if (id !== null && String(id) === want) {
-            return room;
-        }
-    }
-    return null;
+function roomNameForMotorInMap(roomVentMap, externalId) {
+    const found = findRoomVentEntryByExternalId(
+        normalizeRoomVentMap(roomVentMap),
+        externalId,
+    );
+    return found !== null ? found.room : null;
 }
 
 module.exports = {
@@ -242,6 +360,10 @@ module.exports = {
     isFiniteNum,
     finiteNumOrDefault,
     parseMotorId,
+    parseRoomVentEntry,
+    normalizeRoomVentMap,
+    normalizeVentBaseUrls,
+    findRoomVentEntryByExternalId,
     readRowTemp,
     normalizedPauseHrsMap,
     parsePauseHrsWindow,

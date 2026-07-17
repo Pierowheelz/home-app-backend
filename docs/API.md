@@ -517,7 +517,7 @@ Config-driven Zigbee remotes on the same `tasmota_zigbee` bridge. There is **no 
 |--------|--------|--------|
 | `bulb` | `fixtureId`, `brightness` (1–100), `colour` (`0` = red, or Kelvin) | Manual fixture override + immediate push |
 | `bulbReset` | `fixtureId` | Clear override → schedule + immediate push |
-| `vent` | `percent` (0–100) and either `motorId` or `room` (`roomVentMap` label; `motorId` wins if both set) | Set vent position + record manual override |
+| `vent` | `percent` (0–100) and either `motorId` (flat **external** id) or `room` (`roomVentMap` label; `motorId` wins if both set) | Set vent position + record manual override |
 
 **Event mapping**
 
@@ -653,12 +653,13 @@ Full contract: [Vent-Hvac-Mode-API.md](./Vent-Hvac-Mode-API.md).
 
 **Auth:** JWT + `NORMAL_USER`.
 
-**Path:** `motorId` — numeric id as string; `percent` — **0–100** (clamped and rounded server-side). Example: `/vents/2/75`.
+**Path:** `motorId` — flat **external** id as string (from `roomVentMap`; defaults to hardware `motorId` when `externalId` omitted); `percent` — **0–100** (clamped and rounded server-side). Example: `/vents/2/75`.
 
 **Responses:**
 
-- `200` — `{ "success": true, "error": "", "status": <cachedPayload> }`
+- `200` — `{ "success": true, "error": "", "status": <mergedCachedPayload> }`
 - `400` — `{ "success": false, "error": "bad_route", "status": "{}" }`
+- `404` — `{ "success": false, "error": "unknown_motor", "status": "{}" }`
 - `500` — `{ "success": false, "error": "offline", "status": ... }`
 
 **Sample:**

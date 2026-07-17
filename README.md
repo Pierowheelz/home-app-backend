@@ -90,7 +90,7 @@ module.exports = {
 | `mqtt.url` | Broker host and port (e.g. `192.168.1.1:1883`). |
 | `mqtt.username` / `mqtt.password` | Broker auth (empty if anonymous). |
 | `environment` | Runtime label (e.g. `dev`, `prod`). |
-| `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, controller room name, vent HTTP base URL, open/closed command endpoints, room-to-vent index map, action log retention, and optional HVAC Zigbee power sensor (see below). |
+| `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, controller room name, vent HTTP base URL(s) (`ventBaseUrl` string or array), open/closed command values, room-to-vent map (`roomVentMap` number or `{ motorId, motorControllerId?, externalId? }`), action log retention, and optional HVAC Zigbee power sensor (see below). |
 | `permissionLevels` | Numeric role flags (`NORMAL_USER`, `ADMIN_USER`). |
 | `users` | Seed users; `password` must be the server-encoded hash (see below). |
 

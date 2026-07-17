@@ -1,4 +1,9 @@
 const fetchWithTimeout = require('../fetchWithTimeout');
+const {
+    normalizeVentBaseUrls,
+    normalizeRoomVentMap,
+    findRoomVentEntryByExternalId,
+} = require('./vent.automation.utils');
 
 /**
  * @param {unknown} data
@@ -19,20 +24,29 @@ function isUsableVentPayload(data) {
     return false;
 }
 
-/** @type {Record<string, unknown>|null} Last successful vent API payload (shape varies by device). */
-let cachedVentPayload = null;
+/** @type {Record<number, Record<string, unknown>|null>} Last successful payload per motorControllerId. */
+const cachedVentPayloadByController = {};
 
 const DEFAULT_VENT_BASE_URL = 'http://192.168.2.110';
 
 /**
- * @returns {string} Base URL for the vent controller HTTP API (no trailing slash).
+ * @returns {string[]} Base URLs for vent controllers (no trailing slash).
  */
-function getVentBaseUrl() {
-    const v = global.appconfig?.ventAutomation?.ventBaseUrl;
-    if (typeof v === 'string' && v.trim() !== '') {
-        return v.replace(/\/$/, '');
+function getVentBaseUrls() {
+    return normalizeVentBaseUrls(global.appconfig?.ventAutomation?.ventBaseUrl, DEFAULT_VENT_BASE_URL);
+}
+
+/**
+ * @param {number} [controllerId=0]
+ * @returns {string} Base URL for the given controller (no trailing slash).
+ */
+function getVentBaseUrl(controllerId = 0) {
+    const urls = getVentBaseUrls();
+    const id = Number.isInteger(controllerId) && controllerId >= 0 ? controllerId : 0;
+    if (id < urls.length) {
+        return urls[id];
     }
-    return DEFAULT_VENT_BASE_URL;
+    return urls[0] ?? DEFAULT_VENT_BASE_URL;
 }
 
 /**
@@ -46,18 +60,59 @@ function ventNumberPad(value, padding) {
 }
 
 /**
- * @returns {Record<string, unknown>|null} Last payload after a successful GET or SET, or null.
+ * Merged status keyed by externalId for API/dashboard consumers.
+ * @returns {Record<string, unknown>|null}
  */
 function getCachedVentPayload() {
-    return cachedVentPayload;
+    const map = normalizeRoomVentMap(global.appconfig?.ventAutomation?.roomVentMap);
+    /** @type {Record<string, unknown>} */
+    const merged = {};
+    let any = false;
+    for (const entry of Object.values(map)) {
+        const ctrlPayload = cachedVentPayloadByController[entry.motorControllerId];
+        if (!ctrlPayload) {
+            continue;
+        }
+        const block = findMotorBlock(ctrlPayload, entry.motorId);
+        if (!block) {
+            continue;
+        }
+        merged[String(entry.externalId)] = block;
+        any = true;
+    }
+    if (!any && Object.keys(map).length === 0) {
+        // Legacy single-controller cache with no roomVentMap yet: expose controller 0 as-is.
+        const c0 = cachedVentPayloadByController[0];
+        return c0 ?? null;
+    }
+    return any ? merged : null;
 }
 
 /**
+ * @param {number} controllerId
+ * @returns {Record<string, unknown>|null}
+ */
+function getCachedVentPayloadForController(controllerId) {
+    return cachedVentPayloadByController[controllerId] ?? null;
+}
+
+/**
+ * @param {number} controllerId
  * @param {Record<string, unknown>|null} payload
  * @returns {void}
  */
-function setCachedVentPayload(payload) {
-    cachedVentPayload = payload;
+function setCachedVentPayload(controllerId, payload) {
+    cachedVentPayloadByController[controllerId] = payload;
+}
+
+/**
+ * Clear all per-controller caches.
+ * @returns {void}
+ */
+function clearAllCachedVentPayloads() {
+    for (const key of Object.keys(cachedVentPayloadByController)) {
+        delete cachedVentPayloadByController[Number(key)];
+    }
 }
 
 /**
@@ -92,11 +147,12 @@ function isRecoverableVentSetNetworkError(err) {
 
 /**
  * Poll status after SET dropped the connection; firmware often applies the move but closes HTTP early.
- * @param {number|string} motorId
+ * @param {number} controllerId
+ * @param {number|string} motorId Hardware motor index on that controller.
  * @param {number} targetPos Clamped 0–100.
  * @returns {Promise<{ ok: boolean, data: Record<string, unknown>|null }>}
  */
-async function pollUntilMotorNear(motorId, targetPos) {
+async function pollUntilMotorNear(controllerId, motorId, targetPos) {
     const maxWaitMs = 55000;
     const intervalMs = 2500;
     const tolerance = 3;
@@ -106,14 +162,16 @@ async function pollUntilMotorNear(motorId, targetPos) {
     await sleep(800);
 
     while (Date.now() < deadline) {
-        const payload = await getVentStatus();
+        const payload = await getVentStatus(controllerId);
         if (payload && typeof payload === 'object') {
             lastPayload = payload;
         }
         const pos = readMotorPos(lastPayload, motorId);
         if (pos !== null && Math.abs(pos - targetPos) <= tolerance) {
             console.log(
-                'Vent SET recovered via poll; motor',
+                'Vent SET recovered via poll; controller',
+                controllerId,
+                'motor',
                 motorId,
                 'at',
                 pos,
@@ -126,7 +184,9 @@ async function pollUntilMotorNear(motorId, targetPos) {
     }
 
     console.warn(
-        'Vent SET poll gave up; motor',
+        'Vent SET poll gave up; controller',
+        controllerId,
+        'motor',
         motorId,
         'last pos',
         readMotorPos(lastPayload, motorId),
@@ -137,16 +197,17 @@ async function pollUntilMotorNear(motorId, targetPos) {
 }
 
 /**
- * Fetch current vent status from the controller (`t=1`).
+ * Fetch current vent status from one controller (`t=1`).
+ * @param {number} [controllerId=0]
  * @returns {Promise<Record<string, unknown>|null>} Parsed JSON when usable; otherwise null.
  */
-async function getVentStatus() {
-    const base = getVentBaseUrl();
+async function getVentStatus(controllerId = 0) {
+    const base = getVentBaseUrl(controllerId);
     const url = `${base}/?&t=1`;
     try {
         const response = await fetchWithTimeout(url, { timeoutMs: 8000 });
         if (!response.ok) {
-            console.warn('Vent GET: HTTP not ok');
+            console.warn('Vent GET: HTTP not ok; controller', controllerId);
             return null;
         }
         const text = await response.text();
@@ -155,30 +216,45 @@ async function getVentStatus() {
             data = text ? JSON.parse(text) : null;
         } catch (parseErr) {
             const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
-            console.warn('Vent GET: invalid JSON', msg, text.slice(0, 200));
+            console.warn('Vent GET: invalid JSON; controller', controllerId, msg, text.slice(0, 200));
             return null;
         }
         if (data && typeof data === 'object' && isUsableVentPayload(data)) {
-            cachedVentPayload = /** @type {Record<string, unknown>} */ (data);
+            cachedVentPayloadByController[controllerId] = /** @type {Record<string, unknown>} */ (data);
         }
         return /** @type {Record<string, unknown>} */ (data);
     } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn('Vent GET failed', msg);
+        console.warn('Vent GET failed; controller', controllerId, msg);
         return null;
     }
 }
 
 /**
- * Set a vent motor position (raw device units, typically 0–100).
- * @param {number|string} motorId Motor index as used in `m=` query parameter.
+ * Poll every configured controller and refresh caches.
+ * @returns {Promise<(Record<string, unknown>|null)[]>}
+ */
+async function getAllVentStatuses() {
+    const urls = getVentBaseUrls();
+    /** @type {(Record<string, unknown>|null)[]} */
+    const results = [];
+    for (let i = 0; i < urls.length; i++) {
+        results.push(await getVentStatus(i));
+    }
+    return results;
+}
+
+/**
+ * Set a vent motor position on a specific controller (raw device units, typically 0–100).
+ * @param {number} controllerId
+ * @param {number|string} motorId Hardware motor index as used in `m=` query parameter.
  * @param {number} raw Raw position (clamped 0–100 before send).
  * @returns {Promise<{ ok: boolean, data: Record<string, unknown>|null }>}
  */
-async function setVentMotorRaw(motorId, raw) {
+async function setVentMotorRaw(controllerId, motorId, raw) {
     const clamped = Math.max(0, Math.min(100, Math.round(Number(raw))));
     const padded = ventNumberPad(clamped, 3);
-    const base = getVentBaseUrl();
+    const base = getVentBaseUrl(controllerId);
     const url = `${base}/?a=6&t=1&m=${encodeURIComponent(String(motorId))}&d=${padded}`;
 
     /**
@@ -188,7 +264,7 @@ async function setVentMotorRaw(motorId, raw) {
     const finishFromPayload = (data) => {
         console.log('Vent SET response: ', data);
         if (data && typeof data === 'object' && isUsableVentPayload(data)) {
-            cachedVentPayload = data;
+            cachedVentPayloadByController[controllerId] = data;
         }
         return { ok: true, data };
     };
@@ -196,7 +272,7 @@ async function setVentMotorRaw(motorId, raw) {
     try {
         const response = await fetchWithTimeout(url, { timeoutMs: 90000 });
         if (!response.ok) {
-            console.warn('Vent SET: HTTP not ok', response.status);
+            console.warn('Vent SET: HTTP not ok', response.status, 'controller', controllerId);
             return { ok: false, data: null };
         }
         const text = await response.text();
@@ -205,7 +281,7 @@ async function setVentMotorRaw(motorId, raw) {
             data = text ? JSON.parse(text) : null;
         } catch (parseErr) {
             const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
-            console.warn('Vent SET: invalid JSON', msg, text.slice(0, 200));
+            console.warn('Vent SET: invalid JSON; controller', controllerId, msg, text.slice(0, 200));
             return { ok: false, data: null };
         }
         return finishFromPayload(data);
@@ -213,17 +289,35 @@ async function setVentMotorRaw(motorId, raw) {
         if (isRecoverableVentSetNetworkError(e)) {
             const msg = e instanceof Error ? e.message : String(e);
             console.warn('Vent SET connection dropped; polling for position', clamped, msg);
-            return pollUntilMotorNear(motorId, clamped);
+            return pollUntilMotorNear(controllerId, motorId, clamped);
         }
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn('Vent SET failed', msg);
+        console.warn('Vent SET failed; controller', controllerId, msg);
         return { ok: false, data: null };
     }
 }
 
 /**
+ * Resolve `externalId` via roomVentMap and set the hardware motor.
+ * @param {number|string} externalId
+ * @param {number} raw
+ * @returns {Promise<{ ok: boolean, data: Record<string, unknown>|null, externalId?: number, entry?: import('./vent.automation.utils').RoomVentEntry }>}
+ */
+async function setVentMotorByExternalId(externalId, raw) {
+    const map = normalizeRoomVentMap(global.appconfig?.ventAutomation?.roomVentMap);
+    const found = findRoomVentEntryByExternalId(map, externalId);
+    if (found === null) {
+        console.warn('Vent SET: unknown externalId', externalId);
+        return { ok: false, data: null };
+    }
+    const { entry } = found;
+    const result = await setVentMotorRaw(entry.motorControllerId, entry.motorId, raw);
+    return { ...result, externalId: entry.externalId, entry };
+}
+
+/**
  * Locate the status object for a motor on the vent payload.
- * @param {Record<string, unknown>|null|undefined} payload Root JSON from vent API.
+ * @param {Record<string, unknown>|null|undefined} payload Root JSON from vent API (or merged-by-externalId cache).
  * @param {number|string} motorId
  * @returns {Record<string, unknown>|null}
  */
@@ -290,11 +384,16 @@ function readMotorSlot(payload, motorId) {
 
 module.exports = {
     getVentBaseUrl,
+    getVentBaseUrls,
     ventNumberPad,
     getCachedVentPayload,
+    getCachedVentPayloadForController,
     setCachedVentPayload,
+    clearAllCachedVentPayloads,
     getVentStatus,
+    getAllVentStatuses,
     setVentMotorRaw,
+    setVentMotorByExternalId,
     readMotorPos,
     readMotorSlot,
 };

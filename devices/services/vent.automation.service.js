@@ -4,7 +4,8 @@ const {
     roundToOneDecimal,
     isFiniteNum,
     finiteNumOrDefault,
-    parseMotorId,
+    normalizeRoomVentMap,
+    normalizeVentBaseUrls,
     readRowTemp,
     normalizedPauseHrsMap,
     parsePauseHrsWindow,
@@ -17,7 +18,7 @@ const {
     redundantAltLabelForPrimaryRoom,
 } = require('../lib/vent.automation.utils');
 
-/** @type {Record<string, number>} motorId (as string) -> manual override until epoch ms */
+/** @type {Record<string, number>} externalId (as string) -> manual override until epoch ms */
 const manualOverrideUntilByMotor = /** @type {Record<string, number>} */ ({});
 
 /** @type {Record<string, { temperature: number, lastUpdateMs: number }>} Optional Wi-Fi / supplemental readings by room name. */
@@ -119,13 +120,13 @@ const DEFAULTS = {
 };
 
 /**
- * @param {typeof DEFAULTS & { ventBaseUrl?: string, pauseHrs: Record<string, string>, timezone: string }} cfg
- * @param {number|string} motorId
+ * @param {ReturnType<typeof getVentAutomationConfig>} cfg
+ * @param {number|string} externalId
  * @param {number} nowMs
  * @returns {boolean}
  */
-function isPauseHoursActiveForMotor(cfg, motorId, nowMs) {
-    const room = roomNameForMotorInMap(cfg.roomVentMap, motorId);
+function isPauseHoursActiveForMotor(cfg, externalId, nowMs) {
+    const room = roomNameForMotorInMap(cfg.roomVentMap, externalId);
     if (room === null) {
         return false;
     }
@@ -152,17 +153,22 @@ function isPauseHoursActiveForMotor(cfg, motorId, nowMs) {
 
 /**
  * Resolve `appconfig.ventAutomation` merged with {@link DEFAULTS}.
- * @returns {typeof DEFAULTS & { ventBaseUrl?: string }}
+ * @returns {typeof DEFAULTS & { roomVentMap: Record<string, import('../lib/vent.automation.utils').RoomVentEntry>, ventBaseUrls: string[] }}
  */
 function getVentAutomationConfig() {
     const raw = global.appconfig?.ventAutomation;
     const r = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
         ? /** @type {Record<string, unknown>} */ (raw)
         : {};
-    const roomVentMap =
-        r.roomVentMap !== null && typeof r.roomVentMap === 'object' && !Array.isArray(r.roomVentMap)
-            ? /** @type {Record<string, number>} */ (/** @type {unknown} */ (r.roomVentMap))
-            : DEFAULTS.roomVentMap;
+    const ventBaseUrls = normalizeVentBaseUrls(r.ventBaseUrl);
+    const roomVentMap = normalizeRoomVentMap(r.roomVentMap, DEFAULTS.roomVentMap);
+    for (const [room, entry] of Object.entries(roomVentMap)) {
+        if (entry.motorControllerId >= ventBaseUrls.length) {
+            console.warn(
+                `ventAutomation.roomVentMap["${room}"]: motorControllerId ${entry.motorControllerId} out of range (ventBaseUrl has ${ventBaseUrls.length} entr${ventBaseUrls.length === 1 ? 'y' : 'ies'})`,
+            );
+        }
+    }
     const coolTargetC = finiteNumOrDefault(r.coolTargetC, DEFAULTS.coolTargetC);
     const heatTargetC = finiteNumOrDefault(r.heatTargetC, DEFAULTS.heatTargetC);
     /** @type {Record<string, { coolTargetC: number, heatTargetC: number }>} */
@@ -215,7 +221,7 @@ function getVentAutomationConfig() {
             r.hysteresisClosePercent, DEFAULTS.hysteresisClosePercent, { min: 0, max: 100 },
         ),
         roomVentMap,
-        ventBaseUrl: typeof r.ventBaseUrl === 'string' ? r.ventBaseUrl : undefined,
+        ventBaseUrls,
         pauseHrs: normalizedPauseHrsMap(r.pauseHrs, DEFAULTS.pauseHrs),
         timezone:
             typeof r.timezone === 'string' && r.timezone.trim() !== ''
@@ -394,25 +400,25 @@ function sensorRowToDashboardFields(row) {
 
 /**
  * True while the manual API override timer is active or the room's configured {@link getVentAutomationConfig}'s `pauseHrs` window applies.
- * @param {number|string} motorId
+ * @param {number|string} externalId
  * @returns {boolean}
  */
-function isManualOverrideActive(motorId) {
+function isManualOverrideActive(externalId) {
     const now = Date.now();
-    const until = manualOverrideUntilByMotor[String(motorId)] ?? 0;
+    const until = manualOverrideUntilByMotor[String(externalId)] ?? 0;
     if (now < until) {
         return true;
     }
-    return isPauseHoursActiveForMotor(getVentAutomationConfig(), motorId, now);
+    return isPauseHoursActiveForMotor(getVentAutomationConfig(), externalId, now);
 }
 
 /**
- * @param {number|string} motorId
+ * @param {number|string} externalId
  * @returns {void}
  */
-function recordManualOverride(motorId) {
+function recordManualOverride(externalId) {
     const cfg = getVentAutomationConfig();
-    manualOverrideUntilByMotor[String(motorId)] = Date.now() + cfg.manualOverrideMs;
+    manualOverrideUntilByMotor[String(externalId)] = Date.now() + cfg.manualOverrideMs;
 }
 
 /**
@@ -422,11 +428,11 @@ function recordManualOverride(motorId) {
  */
 function clearManualOverrideForRoom(room) {
     const cfg = getVentAutomationConfig();
-    const motorId = parseMotorId(cfg.roomVentMap[room]);
-    if (motorId === null) {
+    const entry = cfg.roomVentMap[room];
+    if (!entry) {
         return;
     }
-    delete manualOverrideUntilByMotor[String(motorId)];
+    delete manualOverrideUntilByMotor[String(entry.externalId)];
 }
 
 /**
@@ -904,24 +910,25 @@ async function evaluateAndAct(sensorsByRoom) {
         return;
     }
 
-    const ventPayload = await ventClient.getVentStatus();
-    if (!ventPayload || typeof ventPayload !== 'object') {
+    const ventPayloads = await ventClient.getAllVentStatuses();
+    if (!ventPayloads.some((p) => p && typeof p === 'object')) {
         console.warn('Vent automation: skipped tick (no status)');
+        return;
+    }
+    const ventPayload = ventClient.getCachedVentPayload();
+    if (!ventPayload || typeof ventPayload !== 'object') {
+        console.warn('Vent automation: skipped tick (no merged status)');
         return;
     }
 
     const globalTargets = { coolTargetC, heatTargetC };
     const posMatchTol = 3;
 
-    for (const [roomName, motorIdRaw] of Object.entries(roomVentMap)) {
+    for (const [roomName, entry] of Object.entries(roomVentMap)) {
         if (roomName === stairName) {
             continue;
         }
-        const motorId = parseMotorId(motorIdRaw);
-        if (motorId === null) {
-            continue;
-        }
-        if (isManualOverrideActive(motorId)) {
+        if (isManualOverrideActive(entry.externalId)) {
             continue;
         }
 
@@ -944,7 +951,7 @@ async function evaluateAndAct(sensorsByRoom) {
         );
         lastAutomationCmdByRoom[roomName] = targetRaw;
 
-        const pos = ventClient.readMotorPos(ventPayload, motorId);
+        const pos = ventClient.readMotorPos(ventPayload, entry.externalId);
         if (pos === null) {
             continue;
         }
@@ -952,7 +959,11 @@ async function evaluateAndAct(sensorsByRoom) {
         if (Math.abs(pos - targetRaw) <= posMatchTol) {
             continue;
         }
-        const { ok } = await ventClient.setVentMotorRaw(motorId, targetRaw);
+        const { ok } = await ventClient.setVentMotorRaw(
+            entry.motorControllerId,
+            entry.motorId,
+            targetRaw,
+        );
         const openR = Math.round(cfg.ventOpenRaw);
         const closedR = Math.round(cfg.ventClosedRaw);
         const action =
@@ -962,7 +973,7 @@ async function evaluateAndAct(sensorsByRoom) {
         ventActionLog.append({
             source: 'automation',
             action,
-            motorId,
+            motorId: entry.externalId,
             roomName,
             success: ok,
             targetRaw,
@@ -993,7 +1004,7 @@ async function runAutomationTickFromSnapshot() {
 
 /**
  * Snapshot for dashboards: per-room temps and optional vent fields, mode, targets, and recent log stats.
- * Refreshes vent hardware once via {@link ventClient.getVentStatus}.
+ * Refreshes vent hardware once via {@link ventClient.getAllVentStatuses}.
  * @returns {Promise<Record<string, unknown>>}
  */
 async function getAutomationDashboard() {
@@ -1023,22 +1034,18 @@ async function getAutomationDashboard() {
         ? applyVentAutomationHvacIdleHold(rawMode, cfg.hvacModeIdleHoldAfterActiveMs, nowDash)
         : rawMode;
 
-    await ventClient.getVentStatus();
+    await ventClient.getAllVentStatuses();
     const ventPayload = ventClient.getCachedVentPayload();
 
     const globalTargets = { coolTargetC: cfg.coolTargetC, heatTargetC: cfg.heatTargetC };
 
     /** @type {Map<string, Record<string, unknown>>} */
     const ventFieldsByRoom = new Map();
-    for (const [roomName, motorIdRaw] of Object.entries(cfg.roomVentMap)) {
-        const motorId = parseMotorId(motorIdRaw);
-        if (motorId === null) {
-            continue;
-        }
-        const until = manualOverrideUntilByMotor[String(motorId)] ?? 0;
+    for (const [roomName, entry] of Object.entries(cfg.roomVentMap)) {
+        const until = manualOverrideUntilByMotor[String(entry.externalId)] ?? 0;
         const manualTimerActive = nowDash < until;
-        const manualOverrideActive = manualTimerActive || isPauseHoursActiveForMotor(cfg, motorId, nowDash);
-        const slot = ventClient.readMotorSlot(ventPayload, motorId);
+        const manualOverrideActive = manualTimerActive || isPauseHoursActiveForMotor(cfg, entry.externalId, nowDash);
+        const slot = ventClient.readMotorSlot(ventPayload, entry.externalId);
         const roomTemp = readRowTemp(merged[roomName]);
         const eff = effectiveRoomBandTargets(roomName, nowDash, globalTargets);
         let ventTargetOpenPercent = null;
@@ -1060,7 +1067,7 @@ async function getAutomationDashboard() {
         const isOpen = slot !== null && slot.pos > 0;
         const rtOverride = getRoomTargetOverride(roomName, nowDash);
         ventFieldsByRoom.set(roomName, {
-            motorId,
+            motorId: entry.externalId,
             displayName: slot?.name ?? null,
             pos: slot?.pos ?? null,
             isOpen,

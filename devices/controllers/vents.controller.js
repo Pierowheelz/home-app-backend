@@ -6,12 +6,12 @@ const ventActionLog = require('../services/vent.action.log');
 const statusInterval = 5 * 60 * 1000;
 
 /**
- * Poll vent hardware and refresh {@link ventClient} cache.
+ * Poll vent hardware and refresh {@link ventClient} caches for all controllers.
  * @returns {Promise<void>}
  */
 const pollVentStatus = async () => {
     console.log('CRON: fetching vent status.');
-    await ventClient.getVentStatus();
+    await ventClient.getAllVentStatuses();
 };
 pollVentStatus();
 setInterval(pollVentStatus, statusInterval);
@@ -199,7 +199,7 @@ exports.getActionLog = async (req, res) => {
 exports.updateStatus = async (req, res) => {
     const pathOnly = req.originalUrl.replace(/\?.*$/, '');
     const match = pathOnly.match(/^\/\w+\/(\d+)\/(\d+)$/);
-    const requestDevice = match ? match[1] : '';
+    const requestExternalId = match ? match[1] : '';
     let requestState = match ? Number(match[2]) : NaN;
 
     if (!match || !Number.isFinite(requestState)) {
@@ -210,14 +210,28 @@ exports.updateStatus = async (req, res) => {
 
     requestState = Math.max(0, Math.min(100, Math.round(requestState)));
 
-    console.log('Opening vent: ' + requestDevice + ' to: ' + requestState);
+    console.log('Opening vent: ' + requestExternalId + ' to: ' + requestState);
     try {
-        const { ok, data } = await ventClient.setVentMotorRaw(requestDevice, requestState);
+        const { ok, data, entry } = await ventClient.setVentMotorByExternalId(
+            requestExternalId,
+            requestState,
+        );
+        if (!entry) {
+            ventActionLog.append({
+                source: 'manual',
+                action: 'set',
+                motorId: requestExternalId,
+                success: false,
+                targetRaw: requestState,
+            });
+            res.status(404).send({ success: false, error: 'unknown_motor', status: '{}' });
+            return;
+        }
         if (!ok) {
             ventActionLog.append({
                 source: 'manual',
                 action: 'set',
-                motorId: requestDevice,
+                motorId: entry.externalId,
                 success: false,
                 targetRaw: requestState,
             });
@@ -225,21 +239,21 @@ exports.updateStatus = async (req, res) => {
             res.status(500).send({ success: false, error: 'offline', status: '{}' });
             return;
         }
-        ventAutomation.recordManualOverride(requestDevice);
+        ventAutomation.recordManualOverride(entry.externalId);
         ventActionLog.append({
             source: 'manual',
             action: 'set',
-            motorId: requestDevice,
+            motorId: entry.externalId,
             success: true,
             targetRaw: requestState,
         });
         console.log('Vents status: ', data);
     } catch (error) {
-        ventClient.setCachedVentPayload(null);
+        ventClient.clearAllCachedVentPayloads();
         ventActionLog.append({
             source: 'manual',
             action: 'set',
-            motorId: requestDevice,
+            motorId: requestExternalId,
             success: false,
             targetRaw: requestState,
         });

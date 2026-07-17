@@ -11,6 +11,7 @@ const ventClient = require('../lib/vent.client');
  * @typedef {{ type: 'bulb', fixtureId: string, brightness: number, colour: number }} BulbAction
  * @typedef {{ type: 'bulbReset', fixtureId: string }} BulbResetAction
  * @typedef {{ type: 'vent', percent: number, motorId?: number, room?: string }} VentAction
+ * `motorId` on vent actions is the flat external id (same namespace as `POST /vents/:motorId`).
  * @typedef {BulbAction|BulbResetAction|VentAction} ControlAction
  * @typedef {'button'|'dimmer'} ControlDeviceType
  * @typedef {{
@@ -268,19 +269,25 @@ function classifyRemotePayload(payload) {
 }
 
 /**
- * Resolve vent motor id from action (`motorId` wins over `room`).
+ * Resolve vent mapping from action (`motorId` as externalId wins over `room`).
  * @param {VentAction} action
- * @returns {number|null}
+ * @returns {import('../lib/vent.automation.utils').RoomVentEntry|null}
  */
-function resolveVentMotorId(action) {
+function resolveVentEntry(action) {
+    const map = ventAutomation.getVentAutomationConfig().roomVentMap;
     if (typeof action.motorId === 'number' && Number.isInteger(action.motorId) && action.motorId >= 0) {
-        return action.motorId;
+        for (const entry of Object.values(map)) {
+            if (entry.externalId === action.motorId) {
+                return entry;
+            }
+        }
+        console.warn(`Zigbee controls: unknown vent externalId ${action.motorId}`);
+        return null;
     }
     if (typeof action.room === 'string' && action.room !== '') {
-        const map = ventAutomation.getVentAutomationConfig().roomVentMap;
-        const motor = map[action.room];
-        if (typeof motor === 'number' && Number.isInteger(motor) && motor >= 0) {
-            return motor;
+        const entry = map[action.room];
+        if (entry) {
+            return entry;
         }
         console.warn(`Zigbee controls: unknown vent room "${action.room}"`);
         return null;
@@ -311,16 +318,22 @@ async function executeAction(action) {
         return;
     }
     if (action.type === 'vent') {
-        const motorId = resolveVentMotorId(action);
-        if (motorId === null) {
+        const entry = resolveVentEntry(action);
+        if (entry === null) {
             return;
         }
-        const { ok } = await ventClient.setVentMotorRaw(motorId, action.percent);
+        const { ok } = await ventClient.setVentMotorRaw(
+            entry.motorControllerId,
+            entry.motorId,
+            action.percent,
+        );
         if (!ok) {
-            console.warn(`Zigbee controls: vent set failed motor=${motorId} percent=${action.percent}`);
+            console.warn(
+                `Zigbee controls: vent set failed externalId=${entry.externalId} percent=${action.percent}`,
+            );
             return;
         }
-        ventAutomation.recordManualOverride(motorId);
+        ventAutomation.recordManualOverride(entry.externalId);
     }
 }
 

@@ -22,7 +22,7 @@ flowchart LR
   VClient -->|GET t=1 / SET a=6| HW
 ```
 
-1. **`vent.client`** — HTTP client for the physical vent controller (`ventBaseUrl`). Caches the last successful JSON status. Polls are triggered on a timer from `vents.controller.js` and on demand when building the automation dashboard.
+1. **`vent.client`** — HTTP client for physical vent controller(s) (`ventBaseUrl` string or array). Caches last successful JSON status per controller and exposes a merged view keyed by `externalId`. Polls are triggered on a timer from `vents.controller.js` and on demand when building the automation dashboard.
 2. **`vent.automation.service`** — Reads room temperatures (primarily from the Tasmota Zigbee bridge), compares them to the **controller room** (e.g. stairwell) and setpoints, and opens/closes vents via `vent.client`. Logs each automation action.
 3. **`vent.action.log`** — In-memory ring of recent actions with configurable retention (`actionLogRetentionMs`).
 4. **`vents.controller.js`** — Express handlers: expose cached status, dashboard + log, and manual position commands.
@@ -46,11 +46,11 @@ All routes require a JWT with normal user permission (see [API.md](./API.md)).
 ### When to call which endpoint
 
 - **Lightweight tile (positions only):** poll `GET /vents` every 30–60s if raw device JSON is enough.
-- **Full dashboard (temps, HVAC mode, “should be open”, statistics, history):** poll `GET /vents/actions` on an interval (e.g. 15–60s). Each call triggers **one** `getVentStatus()` inside `getAutomationDashboard()`, so avoid sub-second polling.
+- **Full dashboard (temps, HVAC mode, “should be open”, statistics, history):** poll `GET /vents/actions` on an interval (e.g. 15–60s). Each call triggers **`getAllVentStatuses()`** inside `getAutomationDashboard()`, so avoid sub-second polling.
 
 ### Manual control
 
-`POST /vents/2/75` sets motor `2` to **75** (clamped and rounded server-side). Successful commands call `recordManualOverride(motorId)` so automation skips that motor until `manualOverrideMs` elapses (from `ventAutomation` config).
+`POST /vents/2/75` sets the vent whose **`externalId`** is **2** to **75** (clamped and rounded server-side). Successful commands call `recordManualOverride(externalId)` so automation skips that motor until `manualOverrideMs` elapses (from `ventAutomation` config).
 
 **Sample (with token):**
 
@@ -98,12 +98,14 @@ The backend does not enforce a single schema beyond what `vent.client` needs. A 
 
 ## Hardware protocol (reference)
 
-Configured URL base: `appconfig.ventAutomation.ventBaseUrl` (fallback in code: `http://192.168.2.110`).
+Configured URL base(s): `appconfig.ventAutomation.ventBaseUrl` — a single string or an array of strings (index = `motorControllerId`; fallback in code: `http://192.168.2.110`).
 
 | Operation | HTTP | Notes |
 |-----------|------|--------|
-| Read status | `GET {base}/?&t=1` | 8s timeout. JSON body parsed and cached when “usable”. |
-| Set position | `GET {base}/?a=6&t=1&m={motorId}&d={padded}` | `d` is **3-digit** zero-padded 0–100 (e.g. `075`). 90s timeout; on some errors the client **polls** until `pos` is near target. |
+| Read status | `GET {base}/?&t=1` | 8s timeout. JSON body parsed and cached per controller when “usable”. |
+| Set position | `GET {base}/?a=6&t=1&m={motorId}&d={padded}` | Hardware `motorId` on that controller; `d` is **3-digit** zero-padded 0–100 (e.g. `075`). 90s timeout; on some errors the client **polls** until `pos` is near target. |
+
+`POST /vents/:motorId/:percent` uses the flat **`externalId`** from `roomVentMap` (not the hardware index). The backend resolves `externalId` → `{ motorControllerId, motorId }` before talking to hardware. `GET /vents` returns a **merged** status object keyed by `externalId`.
 
 Dashboard developers normally **do not** call the device directly; use the backend API so cache, overrides, and logs stay consistent.
 
@@ -158,7 +160,7 @@ Each element combines **sensor** data with optional **vent** fields for rooms in
 | `humidity` | number \| null | When present from sensors. |
 | `lastUpdateMs` | number \| null | Last sensor update epoch ms. |
 | `temperatureSource` | `"zigbee"` \| `"wifi"` | Wi-Fi supplemental reading wins when ingested for that room. |
-| `motorId` | number | Present when room is in `roomVentMap`. |
+| `motorId` | number | Flat **external** id for the room (from `roomVentMap`; present when room is mapped). |
 | `displayName` | string \| null | From device `name` field for that motor. |
 | `pos` | number \| null | Current motor position. |
 | `isOpen` | boolean | Derived: `pos !== null && pos > 0`. |
@@ -224,8 +226,8 @@ Relevant keys in `env.config.js` (see `env.config.js.sample`):
 | `controllerRoomName` | Room label used as **controller** temperature (Zigbee map must match). Deprecated alias: `stairwellRoomName`. |
 | `hysteresisClosePercent` | Vent command 0–100 in the per-room temperature hysteresis band next to the target (100 = legacy: fully open until past the band). |
 | `ventOpenRaw` / `ventClosedRaw` | Positions automation uses for full open and full close (typically 100 / 0). |
-| `roomVentMap` | `{ "Room Name": motorId }` — must align Zigbee room labels with motors. |
-| `ventBaseUrl` | HTTP base for `vent.client`. |
+| `roomVentMap` | `{ "Room Name": motorId \| { motorId, motorControllerId?, externalId? } }` — number form is legacy (`motorControllerId: 0`, `externalId: motorId`). Must align Zigbee room labels with motors. |
+| `ventBaseUrl` | HTTP base for `vent.client`: string or `string[]` (array index = `motorControllerId`). |
 | `actionLogRetentionMs` | Log trimming window. |
 
 Changing config requires a **server restart** (config is read from `global.appconfig`).
