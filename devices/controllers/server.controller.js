@@ -31,24 +31,32 @@ let sendMqttCommand = ( msg, data ) => {
     return false;
 };
 
+/**
+ * @returns {string} Companion HTTP origin without a trailing slash.
+ */
+function serverCompanionBaseUrl() {
+    return String(appconfig.devices.server.companionBaseUrl).replace(/\/$/, '');
+}
+
 exports.attachMqtt = ( mqttController ) => {
-    mqttController.addDevice( 'sonoff_server', onMessage );
+    mqttController.addDevice( appconfig.devices.server.mqttName, onMessage );
     
     sendMqttCommand = mqttController.getCommandFunction();
 };
 
 exports.getState = async (req, res) => {
+    const mqttName = appconfig.devices.server.mqttName;
     
     // Request POWER update from MQTT broker
-    sendMqttCommand( 'cmnd/sonoff_server/state' );
-    sendMqttCommand( 'cmnd/sonoff_server/status' );
+    sendMqttCommand( 'cmnd/' + mqttName + '/state' );
+    sendMqttCommand( 'cmnd/' + mqttName + '/status' );
     
     const time = new Date().getTime();
     
     // Fetch immediateShutdown/preventShutdown bool file statuses
     if( 'on' == currentState ){ // Skip this if the server is off - it won't work anyway
         try{
-            const response = await fetchWithTimeout("http://192.168.1.77:8200/readall?time="+time);
+            const response = await fetchWithTimeout(serverCompanionBaseUrl() + "/readall?time="+time);
             if (!response.ok) {
                 console.warn('ServerControl - Failed to fetch status: ', response);
                 res.status(500).send({success:false,error:'offline',status:'{}'});
@@ -78,7 +86,7 @@ exports.bootServer = (req, res) => {
         res.status(500).send({success:false,error:'already_on',state:currentState,consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown, controller: controllerState});
         return;
     }
-    const result = sendMqttCommand( 'cmnd/sonoff_server/POWER', '1' );
+    const result = sendMqttCommand( 'cmnd/' + appconfig.devices.server.mqttName + '/POWER', '1' );
     let resultCode = result ? 200 : 503;
     
     res.status(resultCode).send({success:true,error:'',state:'on',consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown, controller: controllerState});
@@ -95,7 +103,7 @@ exports.shutdownServer = async (req, res) => {
     const time = new Date().getTime();
     
     try{
-        const response = await fetchWithTimeout("http://192.168.1.77:8200/setimmediate?state=1&time="+time);
+        const response = await fetchWithTimeout(serverCompanionBaseUrl() + "/setimmediate?state=1&time="+time);
         if (!response.ok) {
             console.warn('Failed to update `Immediate Shutdown` status');
             res.status(500).send({success:false,error:'offline',status:'{}'});
@@ -124,7 +132,7 @@ exports.togglePreventShutdown = async (req, res) => {
     const reqState = ('1'==requestState) ? '1' : '0';
     
     try{
-        const response = await fetchWithTimeout("http://192.168.1.77:8200/set?state="+reqState+"&time="+time);
+        const response = await fetchWithTimeout(serverCompanionBaseUrl() + "/set?state="+reqState+"&time="+time);
         if (!response.ok) {
             console.warn('Failed to update `Prevent Shutdown` status');
             res.status(500).send({success:false,error:'offline',status:'{}'});

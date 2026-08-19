@@ -32,7 +32,7 @@ let sendMqttCommand = ( msg, data ) => {
 };
 
 exports.attachMqtt = ( mqttController ) => {
-    mqttController.addDevice( 'tas_garage', onMessage );
+    mqttController.addDevice( appconfig.devices.garage.mqttName, onMessage );
     
     sendMqttCommand = mqttController.getCommandFunction();
 };
@@ -43,7 +43,8 @@ exports.getState = (req, res) => {
 
 exports.triggerButton = (req, res) => {
     console.log('garage trigger button.');
-    const result = sendMqttCommand( 'cmnd/tas_garage/POWER', '1' );
+    const mqttName = appconfig.devices.garage.mqttName;
+    const result = sendMqttCommand( 'cmnd/' + mqttName + '/POWER', '1' );
     let resultCode = result ? 200 : 503;
     
     res.status(resultCode).send(result);

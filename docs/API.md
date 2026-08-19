@@ -232,6 +232,63 @@ const me = await api(`/users/${userId}`, { token: accessToken });
 
 ---
 
+## App layout
+
+UI pages, nav, and widget placement live in `env.config.js` under `appLayout`. Singleton device wiring (garage, speakers, blinds, server) lives under `devices`. Presence of a `devices` key means that device is attached and its HTTP routes are registered.
+
+### `GET /layout`
+
+**Auth:** JWT + `NORMAL_USER`.
+
+**Behavior:** Returns a sanitized copy of `appLayout` for the caller:
+
+- Pages whose `visibleToUserIds` does not include the JWT `userId` are omitted (`visibleToUserIds` omitted means everyone).
+- Widgets of type `garage`, `speakers`, `blinds`, or `server` are omitted when that `devices.*` key is missing.
+- `pageLink` widgets whose target page was filtered out are omitted.
+- MQTT names, passwords, and user records are never included.
+
+**Response `200`:**
+
+```json
+{
+  "nav": { "name": "Dashboards", "icon": "tachometer" },
+  "pages": [
+    {
+      "id": "home",
+      "path": "/",
+      "showInNav": true,
+      "navName": "Dashboard",
+      "miniName": "Dsh",
+      "rows": [
+        {
+          "widgets": [
+            {
+              "type": "pageLink",
+              "pageId": "vents",
+              "title": "AC Vents",
+              "button": "Control Vents",
+              "icon": "wind",
+              "color": "primary",
+              "col": { "md": 6, "xl": 3 }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Widget `type` values the frontend understands: `pageLink`, `vent`, `ventController`, `ventSensorRooms`, `lightFixtures`, `speakers`, `garage`, `blinds`, `server`.
+
+**Sample:**
+
+```javascript
+const layout = await api('/layout', { token: accessToken });
+```
+
+---
+
 ## Devices — Garage
 
 ### `GET /garage`
@@ -256,7 +313,7 @@ const { state } = await api('/garage', { token: accessToken });
 
 **Auth:** JWT + `NORMAL_USER`.
 
-**Behavior:** Publishes MQTT command to pulse the garage opener (`cmnd/tas_garage/POWER` → `1`).
+**Behavior:** Publishes MQTT command to pulse the garage opener (`cmnd/<devices.garage.mqttName>/POWER` → `1`). Route is registered only when `devices.garage` is set.
 
 **Responses:**
 
@@ -275,7 +332,7 @@ const ok = await api('/garage', { method: 'POST', token: accessToken });
 
 All three routes require JWT and **`onlyUserCanDoThisAction(0)`** (user id `0` only).
 
-Each calls a local HTTP device (`fetchWithTimeout` ~4s). Responses are JSON.
+Each calls a local HTTP device at `devices.blinds.baseUrl` (`fetchWithTimeout` ~4s). Routes are registered only when `devices.blinds` is set. Responses are JSON.
 
 ### `POST /blinds/open` | `POST /blinds/close` | `POST /blinds/stop`
 

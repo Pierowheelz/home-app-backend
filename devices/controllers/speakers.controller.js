@@ -25,7 +25,7 @@ let sendMqttCommand = ( msg, data ) => {
 };
 
 exports.attachMqtt = ( mqttController ) => {
-    mqttController.addDevice( 'sonoff_speakers', onMessage );
+    mqttController.addDevice( appconfig.devices.speakers.mqttName, onMessage );
     
     sendMqttCommand = mqttController.getCommandFunction();
 };
@@ -36,14 +36,16 @@ exports.getState = (req, res) => {
 };
 
 exports.turnOn = (req, res) => {
-    const result = sendMqttCommand( 'cmnd/sonoff_speakers/POWER', '1' );
+    const mqttName = appconfig.devices.speakers.mqttName;
+    const result = sendMqttCommand( 'cmnd/' + mqttName + '/POWER', '1' );
     let resultCode = result ? 200 : 503;
     
     res.status(resultCode).send(result);
 };
 
 exports.turnOff = (req, res) => {
-    const result = sendMqttCommand( 'cmnd/sonoff_speakers/POWER', '0' );
+    const mqttName = appconfig.devices.speakers.mqttName;
+    const result = sendMqttCommand( 'cmnd/' + mqttName + '/POWER', '0' );
     let resultCode = result ? 200 : 503;
     
     res.status(resultCode).send(result);

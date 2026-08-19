@@ -4,6 +4,8 @@
 This is a NodeJS Based home-controller API which I built in my spare time. It can interface with Mosquitto, or HTTP based home automation devices. It is designed as a boilerplate, not a ready to go system. Build in support for your own devices in devices/controllers.
 NOTE: this is just the backend API. Frontend is a separate repo.
 
+Pages, nav, and which device cards appear in the app are defined here in `env.config.js` (`devices` + `appLayout`). The frontend loads that via `GET /layout` after login, so a second house can look completely different without a frontend rebuild.
+
 ### Built With
 
 * NodeJS
@@ -34,6 +36,13 @@ module.exports = {
         "password": ""
     },
     "environment": "prod",
+    "devices": {
+        "garage": { "mqttName": "tas_garage" },
+        "speakers": { "mqttName": "sonoff_speakers" },
+        "blinds": { "baseUrl": "http://192.168.2.102" },
+        "server": { "mqttName": "sonoff_server", "companionBaseUrl": "http://192.168.1.77:8200" }
+    },
+    "appLayout": { /* pages, nav, widgets: copy from env.config.js.sample */ },
     "ventAutomation": {
         "enabled": true,
         "coolTargetC": 23,
@@ -90,6 +99,8 @@ module.exports = {
 | `mqtt.url` | Broker host and port (e.g. `192.168.1.1:1883`). |
 | `mqtt.username` / `mqtt.password` | Broker auth (empty if anonymous). |
 | `environment` | Runtime label (e.g. `dev`, `prod`). |
+| `devices` | Optional singleton hardware. Presence of a key wires that device (MQTT/HTTP). See below. |
+| `appLayout` | Frontend pages, sidebar, and widget layout served by `GET /layout`. See below. |
 | `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, controller room name, vent HTTP base URL(s) (`ventBaseUrl` string or array), open/closed command values, room-to-vent map (`roomVentMap` number or `{ motorId, motorControllerId?, externalId? }`), action log retention, and optional HVAC Zigbee power sensor (see below). |
 | `permissionLevels` | Numeric role flags (`NORMAL_USER`, `ADMIN_USER`). |
 | `users` | Seed users; `password` must be the server-encoded hash (see below). |
@@ -105,6 +116,40 @@ The password can be generated from the "Add User" route. POST to /users with the
 }
 ```
 The terminal will display the encoded password which you can add to your "users" key in env.config.js.
+
+### Devices and app layout
+
+Copy `common/config/env.config.js.sample` for a full working layout. Restart the API after edits. No frontend rebuild unless you add a new widget *type* in code.
+
+**`devices`.** Omit a key to leave that hardware unwired (no MQTT subscribe, no HTTP routes). Vents and Zigbee bulbs stay under `ventAutomation` / `bulbAutomation`.
+
+| Key | Fields |
+|-----|--------|
+| `garage` | `mqttName` (Tasmota topic root, e.g. `tas_garage`) |
+| `speakers` | `mqttName` |
+| `blinds` | `baseUrl` (controller origin; `?a=1&b=1\|2\|5` is fixed in code) |
+| `server` | `mqttName`, `companionBaseUrl` |
+
+**`appLayout.pages`.** Each page:
+
+- `id`, `path` (one URL segment, e.g. `/office`; `/` is home)
+- `showInNav`, `navName`, `miniName`
+- `visibleToUserIds`: omit for everyone, or `[0]` / `[1]` to match `users[]._id`
+- `rows`: `{ className?, widgets: [...] }`
+
+Widgets take `type`, optional `col` (`{ sm, md, lg, xl }`), and type-specific props:
+
+| `type` | Props |
+|--------|--------|
+| `pageLink` | `pageId`, `title`, `button`, `icon`, `color` (home tiles) |
+| `vent` | `deviceId`, `title` (title must match a `roomVentMap` room) |
+| `ventController` / `ventSensorRooms` | none |
+| `lightFixtures` | optional `titles` map (`{ bathroom: "Bathroom" }`) |
+| `speakers` / `garage` / `blinds` / `server` | none |
+
+Icon keys: `tachometer`, `bedEmpty`, `garage`, `blinds`, `server`, `wind`, `lightbulb`. Colors are Bootstrap gradient names (`info`, `primary`, `warning`, `dark`, `default`).
+
+`pageLink` tiles pointing at a page the user cannot see are dropped automatically, as are widgets whose `devices.*` key is missing.
 
 ### HVAC power sensor (Tuya Zigbee PJ-1203A)
 

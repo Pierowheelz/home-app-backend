@@ -1,6 +1,6 @@
 {
-  "name": "rest-api-tutorial",
-  "version": "1.0.0",
+  "name": "home-app-backend",
+  "version": "2.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -9,14 +9,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/makinhs/rest-api-tutorial.git"
+    "url": "git+https://github.com/pierowheeler/home-app-backend.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/makinhs/rest-api-tutorial/issues"
+    "url": "https://github.com/pierowheeler/home-app-backend/issues"
   },
-  "homepage": "https://github.com/makinhs/rest-api-tutorial#readme",
+  "homepage": "https://github.com/pierowheeler/home-app-backend#readme",
   "dependencies": {
     "body-parser": "1.19.0",
     "ewelink-api": "^3.1.1",
