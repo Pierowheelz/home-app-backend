@@ -446,6 +446,7 @@ Config lives under `bulbAutomation` in `env.config.js` (`fixtures`, per-fixture 
       "fixtureId": "bathroom",
       "bulbs": ["0x16EE", "0x2DDC"],
       "enabled": true,
+      "power": "on",
       "targetState": { "brightness": 80, "colour": 5500 },
       "overrideState": null,
       "overrideExpiry": null,
@@ -473,6 +474,8 @@ Config lives under `bulbAutomation` in `env.config.js` (`fixtures`, per-fixture 
 ```
 
 `colour: 0` means red (RGB mode); any positive value is Kelvin (white CT).
+
+`power` is the fixture's logical on/off (see `POST /bulbs/:fixtureId/power`). It resets to `"on"` on server restart.
 
 **Sample:**
 
@@ -513,7 +516,7 @@ const fixture = await api('/bulbs/bathroom', { token: accessToken });
 - `brightness` — integer `0`–`100`
 - `colour` — `0` for red RGB, or Kelvin `2000`–`6500` for white CT
 
-**Behavior:** Sets a fixture-level `overrideState` for `manualOverrideMs` (default 90 minutes), then pushes commands immediately. After expiry, automation returns to that fixture’s schedule `targetState`.
+**Behavior:** Sets a fixture-level `overrideState` for `manualOverrideMs` (default 90 minutes), turns the fixture `power` on if it was off, then pushes commands immediately. After expiry, automation returns to that fixture’s schedule `targetState`.
 
 **Responses:**
 
@@ -535,7 +538,7 @@ await api('/bulbs/bathroom', {
 
 **Auth:** JWT + only user id `0` (`onlyUserCanDoThisAction(0)`).
 
-**Behavior:** Clears that fixture’s `overrideState` / `overrideExpiry`, refreshes `targetState` from the fixture’s schedule, then pushes commands for the schedule desired immediately.
+**Behavior:** Clears that fixture’s `overrideState` / `overrideExpiry`, turns the fixture `power` on if it was off, refreshes `targetState` from the fixture’s schedule, then pushes commands for the schedule desired immediately.
 
 **Responses:**
 
@@ -546,6 +549,37 @@ await api('/bulbs/bathroom', {
 
 ```javascript
 await api('/bulbs/bathroom/reset', { method: 'POST', token: accessToken });
+```
+
+### `POST /bulbs/:fixtureId/power`
+
+**Auth:** JWT + only user id `0` (`onlyUserCanDoThisAction(0)`).
+
+**Body:**
+
+```json
+{ "power": "off" }
+```
+
+- `power` — `"on"`, `"off"` or `"toggle"`
+
+**Behavior:**
+
+- **Off** — sends `Power: Off` to every bulb in the fixture. While off, schedule changes and override expiry push nothing (`targetState` still tracks the schedule). If a bulb reports `Power: On` (e.g. wall power restored), it is turned off again. No time limit.
+- **On** — pushes the current effective desired state (an unexpired override if one is active, else the schedule `targetState`). With no schedule target, falls back to the last state applied to the fixture; if nothing has been applied since restart, just sends `Power: On`.
+- Turning off does not clear an active override; it keeps counting down and applies if still active when turned back on.
+- Manual actions (`POST /bulbs/:fixtureId`, `/reset`, remote `bulb` / `bulbReset` actions, dimmer turns) turn the fixture on.
+
+**Responses:**
+
+- `200` — fixture snapshot (includes `power`)
+- `400` — `{ "error": "invalid_power", "message": "..." }`
+- `404` — `{ "error": "unknown_fixture" }`
+
+**Sample:**
+
+```javascript
+await api('/bulbs/bathroom/power', { method: 'POST', token: accessToken, body: { power: 'toggle' } });
 ```
 
 ---
@@ -574,6 +608,7 @@ Config-driven Zigbee remotes on the same `tasmota_zigbee` bridge. There is **no 
 |--------|--------|--------|
 | `bulb` | `fixtureId`, `brightness` (1–100), `colour` (`0` = red, or Kelvin) | Manual fixture override + immediate push |
 | `bulbReset` | `fixtureId` | Clear override → schedule + immediate push |
+| `bulbPower` | `fixtureId`, `power` (`on` / `off` / `toggle`; default `toggle`) | Logical fixture on/off (see `POST /bulbs/:fixtureId/power`) |
 | `vent` | `percent` (0–100) and either `motorId` (flat **external** id) or `room` (`roomVentMap` label; `motorId` wins if both set) | Set vent position + record manual override |
 
 **Event mapping**
@@ -605,6 +640,7 @@ Config-driven Zigbee remotes on the same `tasmota_zigbee` bridge. There is **no 
       "type": "dimmer",
       "fixtureId": "bathroom",
       "single": { "type": "bulb", "fixtureId": "bathroom", "brightness": 1, "colour": 3000 },
+      "double": { "type": "bulbPower", "fixtureId": "bathroom", "power": "toggle" },
       "long": { "type": "bulbReset", "fixtureId": "bathroom" }
     }
   }

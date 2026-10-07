@@ -3,16 +3,17 @@ const ventAutomation = require('./vent.automation.service');
 const ventClient = require('../lib/vent.client');
 
 /**
- * Config-driven Zigbee remotes: button presses run bulb/vent/bulbReset actions;
+ * Config-driven Zigbee remotes: button presses run bulb/bulbReset/bulbPower/vent actions;
  * dimmer turns adjust fixture brightness / colour temp (including red below 2700K).
  */
 
 /**
  * @typedef {{ type: 'bulb', fixtureId: string, brightness: number, colour: number }} BulbAction
  * @typedef {{ type: 'bulbReset', fixtureId: string }} BulbResetAction
+ * @typedef {{ type: 'bulbPower', fixtureId: string, power: 'on'|'off'|'toggle' }} BulbPowerAction
  * @typedef {{ type: 'vent', percent: number, motorId?: number, room?: string }} VentAction
  * `motorId` on vent actions is the flat external id (same namespace as `POST /vents/:motorId`).
- * @typedef {BulbAction|BulbResetAction|VentAction} ControlAction
+ * @typedef {BulbAction|BulbResetAction|BulbPowerAction|VentAction} ControlAction
  * @typedef {'button'|'dimmer'} ControlDeviceType
  * @typedef {{
  *   type: ControlDeviceType,
@@ -170,6 +171,14 @@ function parseAction(raw) {
         }
         return { type: 'bulbReset', fixtureId };
     }
+    if (o.type === 'bulbPower') {
+        const fixtureId = typeof o.fixtureId === 'string' ? o.fixtureId.trim() : '';
+        const power = o.power === undefined ? 'toggle' : o.power;
+        if (fixtureId === '' || (power !== 'on' && power !== 'off' && power !== 'toggle')) {
+            return null;
+        }
+        return { type: 'bulbPower', fixtureId, power };
+    }
     if (o.type === 'vent') {
         const percent = Number(o.percent);
         if (!Number.isInteger(percent) || percent < 0 || percent > 100) {
@@ -312,6 +321,14 @@ async function executeAction(action) {
     if (action.type === 'bulbReset') {
         if (!bulbAutomation.clearOverride(action.fixtureId)) {
             console.warn(`Zigbee controls: unknown fixture "${action.fixtureId}" for bulbReset`);
+            return;
+        }
+        bulbAutomation.reconcileFixture(action.fixtureId, { force: true });
+        return;
+    }
+    if (action.type === 'bulbPower') {
+        if (bulbAutomation.setPower(action.fixtureId, action.power) === null) {
+            console.warn(`Zigbee controls: unknown fixture "${action.fixtureId}" for bulbPower`);
             return;
         }
         bulbAutomation.reconcileFixture(action.fixtureId, { force: true });

@@ -11,9 +11,16 @@ const { getWallClockMinutesInTimeZone } = require('../lib/vent.automation.utils'
  *   hue: number|null,
  *   sat: number|null,
  * }} BulbDeviceState
- * @typedef {{ power: 'off' } | { power: 'on', brightness: number, colour: number }} BulbCommandPlan
+ * Bare `{ power: 'on' }` only powers the bulb on (it keeps its own last brightness/colour).
+ * @typedef {{ power: 'off' } | { power: 'on', brightness: number, colour: number } | { power: 'on' }} BulbCommandPlan
  * @typedef {{ from: string, to: string, brightness: number, colour: number }} BulbScheduleWindow
+ * `power` is the fixture's logical on/off. While `off`, schedule / override-expiry automations push nothing;
+ * manual actions turn it back on. `resumePending` marks an off→on transition whose next reconcile must
+ * push everything (falling back to `lastDesired` when there is no schedule target).
  * @typedef {{
+ *   power: 'on'|'off',
+ *   resumePending: boolean,
+ *   lastDesired: BulbDesiredState|null,
  *   targetState: BulbDesiredState|null,
  *   overrideState: BulbDesiredState|null,
  *   overrideExpiry: number|null,
@@ -186,6 +193,9 @@ function ensureFixtureStates() {
                 deviceStateByBulb[addr] = emptyBulbDeviceState();
             }
             fixtureStates[fixtureId] = {
+                power: 'on',
+                resumePending: false,
+                lastDesired: null,
                 targetState: null,
                 overrideState: null,
                 overrideExpiry: null,
@@ -543,9 +553,10 @@ function applyDeviceReport(addrRaw, payload) {
         return { fixtureId, needsReconcile: false };
     }
 
+    const poweredOff = st.power === 'off';
     /** @type {'red'|'ct'|null} */
     let preferMode = null;
-    const desired = getEffectiveDesired(fixtureId);
+    const desired = poweredOff ? null : getEffectiveDesired(fixtureId);
     if (desired) {
         const plans = expandToBulbPlans(fixtureId, desired);
         const plan = plans[addr];
@@ -569,7 +580,7 @@ function applyDeviceReport(addrRaw, payload) {
             hue: patch.hue !== undefined ? patch.hue : null,
             sat: patch.sat !== undefined ? patch.sat : null,
         };
-        return { fixtureId, needsReconcile: Boolean(desired && cfg.enabled) };
+        return { fixtureId, needsReconcile: Boolean((poweredOff || desired) && cfg.enabled) };
     }
 
     st.deviceStateByBulb[addr] = {
@@ -582,6 +593,10 @@ function applyDeviceReport(addrRaw, payload) {
         sat: patch.sat !== undefined ? patch.sat : prev.sat,
     };
 
+    if (poweredOff) {
+        // Only an explicit Power On report re-asserts off (avoids re-sending on trailing attribute reports).
+        return { fixtureId, needsReconcile: cfg.enabled && patch.power === 'on' };
+    }
     if (!desired || !cfg.enabled) {
         return { fixtureId, needsReconcile: false };
     }
@@ -632,6 +647,7 @@ function setOverride(fixtureId, brightness, colour) {
         return false;
     }
     const cfg = getBulbAutomationConfig();
+    markPoweredOn(st);
     st.overrideState = { brightness, colour };
     st.overrideExpiry = Date.now() + cfg.manualOverrideMs;
     return true;
@@ -650,10 +666,60 @@ function clearOverride(fixtureId, nowMs = Date.now()) {
     if (!st) {
         return false;
     }
+    markPoweredOn(st);
     st.overrideState = null;
     st.overrideExpiry = null;
     st.targetState = scheduleStateForFixture(fixtureId, nowMs);
     return true;
+}
+
+/**
+ * @param {FixtureRuntimeState} st
+ * @returns {void}
+ */
+function markPoweredOn(st) {
+    if (st.power === 'off') {
+        st.power = 'on';
+        st.resumePending = true;
+    }
+}
+
+/**
+ * Set a fixture's logical power. Off pushes nothing further until turned on again (manual actions also turn
+ * it on); on replays the current effective desired. Caller should `reconcileFixture(id, { force: true })`.
+ * @param {string} fixtureId
+ * @param {'on'|'off'|'toggle'} power
+ * @returns {'on'|'off'|null} Resulting power, or null when fixture unknown.
+ */
+function setPower(fixtureId, power) {
+    ensureFixtureStates();
+    const st = fixtureStates[fixtureId];
+    if (!st) {
+        return null;
+    }
+    const next = power === 'toggle' ? (st.power === 'off' ? 'on' : 'off') : power;
+    if (next === 'on') {
+        markPoweredOn(st);
+    } else {
+        st.power = 'off';
+        st.resumePending = false;
+    }
+    return st.power;
+}
+
+/**
+ * Power Off plans for every bulb in a fixture.
+ * @param {string} fixtureId
+ * @returns {Record<string, BulbCommandPlan>}
+ */
+function offPlansForFixture(fixtureId) {
+    const bulbs = getBulbAutomationConfig().fixtures[fixtureId]?.bulbs ?? [];
+    /** @type {Record<string, BulbCommandPlan>} */
+    const plans = {};
+    for (const addr of bulbs) {
+        plans[addr] = { power: 'off' };
+    }
+    return plans;
 }
 
 /**
@@ -667,15 +733,20 @@ function plansNeedingPush(fixtureId) {
     if (!cfg.enabled) {
         return null;
     }
-    const desired = getEffectiveDesired(fixtureId);
-    if (!desired) {
-        return null;
-    }
     const st = fixtureStates[fixtureId];
     if (!st) {
         return null;
     }
-    const allPlans = expandToBulbPlans(fixtureId, desired);
+    let allPlans;
+    if (st.power === 'off') {
+        allPlans = offPlansForFixture(fixtureId);
+    } else {
+        const desired = getEffectiveDesired(fixtureId);
+        if (!desired) {
+            return null;
+        }
+        allPlans = expandToBulbPlans(fixtureId, desired);
+    }
     /** @type {Record<string, BulbCommandPlan>} */
     const need = {};
     for (const [addr, plan] of Object.entries(allPlans)) {
@@ -696,33 +767,47 @@ function plansNeedingPush(fixtureId) {
 function reconcileFixture(fixtureId, opts = {}) {
     ensureFixtureStates();
     const cfg = getBulbAutomationConfig();
-    if (!cfg.enabled || !cfg.fixtures[fixtureId]) {
+    const st = fixtureStates[fixtureId];
+    if (!cfg.enabled || !cfg.fixtures[fixtureId] || !st) {
         return false;
     }
-    const desired = getEffectiveDesired(fixtureId);
-    if (!desired) {
-        return false;
+    /** @type {Record<string, BulbCommandPlan>|null} */
+    let plans;
+    if (st.power === 'off') {
+        plans = opts.force ? offPlansForFixture(fixtureId) : plansNeedingPush(fixtureId);
+    } else {
+        const resuming = st.resumePending;
+        const desired = getEffectiveDesired(fixtureId) ?? (resuming ? st.lastDesired : null);
+        if (desired) {
+            st.lastDesired = { ...desired };
+            plans = opts.force || resuming
+                ? expandToBulbPlans(fixtureId, desired)
+                : plansNeedingPush(fixtureId);
+        } else if (resuming) {
+            // No schedule target and nothing applied since restart: just power on (bulb keeps its own state).
+            plans = {};
+            for (const addr of cfg.fixtures[fixtureId].bulbs) {
+                plans[addr] = { power: 'on' };
+            }
+        } else {
+            return false;
+        }
     }
-    const plans = opts.force
-        ? expandToBulbPlans(fixtureId, desired)
-        : plansNeedingPush(fixtureId);
     if (!plans || Object.keys(plans).length === 0) {
         return false;
     }
     if (typeof pushCommandsFn === 'function') {
         pushCommandsFn(fixtureId, plans);
-        const st = fixtureStates[fixtureId];
-        if (st) {
-            st.lastPushAtMs = Date.now();
-            // After requesting white CT, clear colour/HS cache so stale CT+red Hue cannot false-match.
-            for (const [addr, plan] of Object.entries(plans)) {
-                if (plan.power === 'on' && plan.colour > 0) {
-                    const ds = st.deviceStateByBulb[addr];
-                    if (ds) {
-                        ds.colour = null;
-                        ds.hue = null;
-                        ds.sat = null;
-                    }
+        st.resumePending = false;
+        st.lastPushAtMs = Date.now();
+        // After requesting white CT, clear colour/HS cache so stale CT+red Hue cannot false-match.
+        for (const [addr, plan] of Object.entries(plans)) {
+            if (plan.power === 'on' && 'colour' in plan && plan.colour > 0) {
+                const ds = st.deviceStateByBulb[addr];
+                if (ds) {
+                    ds.colour = null;
+                    ds.hue = null;
+                    ds.sat = null;
                 }
             }
         }
@@ -745,7 +830,7 @@ function onScheduleTick(nowMs = Date.now()) {
             st.overrideState &&
             typeof st.overrideExpiry === 'number' &&
             st.overrideExpiry > nowMs;
-        if (!overrideActive) {
+        if (st && st.power !== 'off' && !overrideActive) {
             reconcileFixture(fixtureId, { force: true });
         }
     }
@@ -762,7 +847,9 @@ function onScheduleTick(nowMs = Date.now()) {
         ) {
             st.overrideState = null;
             st.overrideExpiry = null;
-            reconcileFixture(fixtureId, { force: true });
+            if (st.power !== 'off') {
+                reconcileFixture(fixtureId, { force: true });
+            }
         }
     }
 }
@@ -789,6 +876,7 @@ function getFixtureSnapshot(fixtureId, nowMs = Date.now()) {
         fixtureId,
         bulbs: [...spec.bulbs],
         enabled: cfg.enabled,
+        power: st.power,
         targetState: st.targetState ? { ...st.targetState } : null,
         overrideState: overrideActive && st.overrideState ? { ...st.overrideState } : null,
         overrideExpiry: overrideActive ? st.overrideExpiry : null,
@@ -875,6 +963,7 @@ module.exports = {
     tickSchedules,
     setOverride,
     clearOverride,
+    setPower,
     plansNeedingPush,
     reconcileFixture,
     onScheduleTick,

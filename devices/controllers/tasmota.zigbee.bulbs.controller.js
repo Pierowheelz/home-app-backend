@@ -91,7 +91,7 @@ function jitterInt(base, spread, min, max) {
  * Kelvin and red hue are jittered slightly each send so the value is unlikely to match
  * the bulb's last-seen command (suspected firmware no-op when unchanged).
  * @param {string} addr
- * @param {{ power: 'off' } | { power: 'on', brightness: number, colour: number }} plan
+ * @param {{ power: 'off' } | { power: 'on', brightness: number, colour: number } | { power: 'on' }} plan
  * @returns {string[]} JSON payload strings for `cmnd/tasmota_zigbee/ZbSend`
  */
 function buildZbSendPayloads(addr, plan) {
@@ -102,6 +102,9 @@ function buildZbSendPayloads(addr, plan) {
         return payloads;
     }
     payloads.push(JSON.stringify({ Device: addr, Send: { Power: 'On' } }));
+    if (!('colour' in plan)) {
+        return payloads;
+    }
     if (plan.colour === 0) {
         // Red ≈ hue 0; jitter within 0–8 so it still reads as red but differs per send.
         const hue = jitterInt(0, 8, 0, 8);
@@ -124,7 +127,7 @@ function buildZbSendPayloads(addr, plan) {
  * Publish command plans for mismatched bulbs on a fixture.
  * Staggers ZbSend slightly so the coordinator / bulb can finish each cluster command.
  * @param {string} _fixtureId
- * @param {Record<string, { power: 'off' } | { power: 'on', brightness: number, colour: number }>} plans
+ * @param {Record<string, { power: 'off' } | { power: 'on', brightness: number, colour: number } | { power: 'on' }>} plans
  * @returns {void}
  */
 function pushFixtureCommands(_fixtureId, plans) {
@@ -290,6 +293,29 @@ exports.setFixture = (req, res) => {
 exports.resetFixture = (req, res) => {
     const fixtureId = String(req.params.fixtureId || '');
     if (!bulbAutomation.clearOverride(fixtureId)) {
+        res.status(404).send({ error: 'unknown_fixture' });
+        return;
+    }
+    bulbAutomation.reconcileFixture(fixtureId, { force: true });
+    res.status(200).send(bulbAutomation.getFixtureSnapshot(fixtureId));
+};
+
+/**
+ * POST /bulbs/:fixtureId/power — logical fixture on/off.
+ * Body: `{ power: 'on' | 'off' | 'toggle' }`. Off stops automations pushing; on replays current desired.
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @returns {void}
+ */
+exports.setFixturePower = (req, res) => {
+    const fixtureId = String(req.params.fixtureId || '');
+    const body = req.body !== null && typeof req.body === 'object' ? req.body : {};
+    const power = body.power;
+    if (power !== 'on' && power !== 'off' && power !== 'toggle') {
+        res.status(400).send({ error: 'invalid_power', message: "power must be 'on', 'off' or 'toggle'" });
+        return;
+    }
+    if (bulbAutomation.setPower(fixtureId, power) === null) {
         res.status(404).send({ error: 'unknown_fixture' });
         return;
     }

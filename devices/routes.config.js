@@ -113,6 +113,11 @@ exports.routesConfig = function (app) {
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         TasmotaZigbeeBulbsController.getFixture
     ]);
+    app.post('/bulbs/:fixtureId/power', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        TasmotaZigbeeBulbsController.setFixturePower
+    ]);
     app.post('/bulbs/:fixtureId/reset', [
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
