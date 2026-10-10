@@ -18,6 +18,7 @@
   },
   "homepage": "https://github.com/pierowheeler/home-app-backend#readme",
   "dependencies": {
+    "@matter/main": "0.17.9",
     "body-parser": "1.19.0",
     "ewelink-api": "^3.1.1",
     "express": "^4.17.1",

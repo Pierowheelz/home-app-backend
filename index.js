@@ -81,3 +81,9 @@ if (useTlsFromConfig()) {
 server.listen(appconfig.port, function () {
     console.log('app listening at port %s', appconfig.port);
 });
+
+require('./devices/services/matter.bridge.service')
+    .start({ isDocker: 'docker' == isDocker })
+    .catch((e) => {
+        console.error('Matter: bridge failed to start:', e);
+    });

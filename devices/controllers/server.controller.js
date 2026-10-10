@@ -79,15 +79,32 @@ exports.getState = async (req, res) => {
     res.status(200).send({success:true,error:'',state:currentState,consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown, controller: controllerState});
 };
 
-exports.bootServer = (req, res) => {
+/**
+ * @returns {'on'|'off'|'unknown'} Last relay state reported over MQTT.
+ */
+exports.getPowerState = () => currentState;
+
+/**
+ * Power the server relay on. Refuses when it is already on or its state is unknown.
+ * @returns {{ ok: true } | { ok: false, error: 'already_on'|'mqtt_unavailable' }}
+ */
+exports.powerOn = () => {
     console.log('ServerControl - Boot Server.');
     if( 'on' == currentState || 'unknown' == currentState ){
         console.log('Server is already on (or state unknown). Aborting request.');
+        return { ok: false, error: 'already_on' };
+    }
+    const result = sendMqttCommand( 'cmnd/' + appconfig.devices.server.mqttName + '/POWER', '1' );
+    return result ? { ok: true } : { ok: false, error: 'mqtt_unavailable' };
+};
+
+exports.bootServer = (req, res) => {
+    const boot = exports.powerOn();
+    if( !boot.ok && 'already_on' == boot.error ){
         res.status(500).send({success:false,error:'already_on',state:currentState,consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown, controller: controllerState});
         return;
     }
-    const result = sendMqttCommand( 'cmnd/' + appconfig.devices.server.mqttName + '/POWER', '1' );
-    let resultCode = result ? 200 : 503;
+    let resultCode = boot.ok ? 200 : 503;
     
     res.status(resultCode).send({success:true,error:'',state:'on',consumption:currentConsumption,prevent:preventShutdown,immediate:immediateShutdown, controller: controllerState});
 };

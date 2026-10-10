@@ -102,6 +102,7 @@ module.exports = {
 | `devices` | Optional singleton hardware. Presence of a key wires that device (MQTT/HTTP). See below. |
 | `appLayout` | Frontend pages, sidebar, and widget layout served by `GET /layout`. See below. |
 | `ventAutomation` | Optional vent automation: targets, hysteresis, manual override window, controller room name, vent HTTP base URL(s) (`ventBaseUrl` string or array), open/closed command values, room-to-vent map (`roomVentMap` number or `{ motorId, motorControllerId?, externalId? }`), action log retention, and optional HVAC Zigbee power sensor (see below). |
+| `matter` | Optional Matter bridge for Google Home: pairing passcode / discriminator, test vendor / product id, storage path, and which devices to expose (see below). |
 | `permissionLevels` | Numeric role flags (`NORMAL_USER`, `ADMIN_USER`). |
 | `users` | Seed users; `password` must be the server-encoded hash (see below). |
 
@@ -176,6 +177,35 @@ Verify on `tele/<bridge>/SENSOR` that you start seeing real datapoints alongside
 
 If only `EF00?25` keeps arriving and nothing with a `/`, the rule hasn't taken effect; re-run the two commands above and confirm the bridge log shows `RUL: ZBRECEIVED#<addr>#EF00?25 performs "ZbSend ..."` on every heartbeat.
 
+### Google Home (Matter bridge)
+
+With `matter.enabled`, the API also runs a Matter bridge. Google Home controls the devices locally through a Nest hub on the same network, so it needs no cloud integration or public endpoint.
+
+| `matter` key | Shows up as | Supports |
+|-----|---------|---------|
+| `bulbFixtures` | Light (one per fixture) | On/off, brightness, white colour temperature (2000–6500 K). Brightness / colour changes set a manual override exactly like `POST /bulbs/:fixtureId`; on/off matches `POST /bulbs/:fixtureId/power`. Red (`colour: 0`) is not exposed. |
+| `speakers` | Plug | On / off. |
+| `blinds` | Blinds | Open / close / stop. The controller has no position feedback, so the position is assumed fully open / closed after each command, and partial percentages round to the nearest end. |
+| `server` | Plug | **On only.** "Off" is rejected, so "Hey Google, turn everything off" can't shut the server down. |
+
+Omit a key to leave that device out. `speakers` / `blinds` / `server` also need their `devices.*` entry. Changes made elsewhere (app, schedules, Zigbee remotes, physical buttons) reach Google Home within ~2 s.
+
+**Requirements**
+
+- **Node 20+** (the Docker image uses `node:22`).
+- **Host networking.** Matter uses mDNS and IPv6 on the LAN, which Docker's default bridge network blocks. Run the container with `--network host` (see [Raspberry Pi](#raspberry-pi-32-bit-arm-v7)).
+- **IPv6 enabled on the host.** IPv6 from your internet provider is *not* needed: Matter only needs the automatic link-local (`fe80::`) addresses, which work on an IPv4-only network. Check with `ip -6 addr show eth0`. If there is no `fe80::` address, IPv6 is disabled in the kernel (`sysctl net.ipv6.conf.all.disable_ipv6` is `1`); re-enable it.
+- **Google Home Developer Console project.** Google Home only pairs an uncertified device when its vendor / product id is registered to your account. At [console.home.google.com](https://console.home.google.com), create a project and add a Matter integration with Vendor ID `0xFFF1` and Product ID `0x8000` (or whatever `vendorId` / `productId` you configured). Use the same Google account as the Google Home app.
+
+**Pairing**
+
+1. Set `matter.enabled` to `true`, change `passcode` from the default, and restart.
+2. The log prints a pairing QR code, a link to it, and an 11-digit manual code (also returned by `GET /matter`).
+3. In the Google Home app (phone on the same network): **Devices → Add → Matter-enabled device**, then scan the QR code or enter the manual code. Accept the "uncertified device" prompt.
+4. Assign the bridged devices to rooms.
+
+Pairing data lives in `matter.storagePath` (default `/config/matter` in Docker, so it survives image updates). Deleting it means removing the bridge from Google Home and pairing again.
+
 ## Installation
 
 1. Clone the repo
@@ -197,21 +227,21 @@ Ensure /config volume was created. (create it manually if it wasn't eg. `/config
 
 #### Raspberry Pi (32-bit ARM v7)
 
-On Raspberry Pi OS (or other `linux/arm/v7` hosts), run the image with explicit platform, TLS keys, and config bind mounts. The container listens on **3800**; the example maps host **3600** to that port (match `port` in `env.config.js`).
+On Raspberry Pi OS (or other `linux/arm/v7` hosts), run the image with explicit platform, TLS keys, and config bind mounts. Host networking is required for the Matter bridge; the API then listens directly on the host at `port` from `env.config.js` (`-p` mappings are ignored).
 
 ```sh
 docker pull pierowheelz/home-app-backend:latest 
 docker run -d \
   --name pwhomecontroller \
   --platform linux/arm/v7 \
-  -p 3600:3800 \
+  --network host \
   -v /etc/letsencrypt:/keys \
   -v /opt/home-app/config:/config \
   --restart=unless-stopped \
-  -e NODE_VERSION="16.15.0" \
-  -e YARN_VERSION="1.22.18" \
   pierowheelz/home-app-backend:latest
 ```
+
+With host networking, other containers can no longer reach the API by container name (e.g. a Cloudflare Tunnel service of `http://pwhomecontroller:3800`). Point them at the host instead: the Pi's LAN IP (e.g. `http://192.168.1.10:3800`), or `http://host.docker.internal:3800` after adding `--add-host=host.docker.internal:host-gateway` to that container.
 
 Adjust volume paths and `env.config.js` TLS paths as needed (for example, if certificates live under `/keys/live/example.com/` inside the container, point `ssl_*` and `ca_cert` in config accordingly).
 

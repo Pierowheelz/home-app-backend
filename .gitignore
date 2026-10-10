@@ -7,3 +7,6 @@ common/config/env.config.js
 
 # Ignore DB filesS
 *.db
+
+# Matter bridge fabric / pairing storage
+matter-storage/

@@ -1,5 +1,12 @@
 const fetchWithTimeout = require('../fetchWithTimeout');
 
+/** Controller `b` action codes. */
+const BLINDS_ACTION_CODES = {
+    open: '1',
+    close: '2',
+    stop: '5',
+};
+
 /**
  * Blinds controller HTTP URL for a Tasmota-style action code.
  *
@@ -11,59 +18,39 @@ function blindsActionUrl(actionCode) {
     return baseUrl + '/?a=1&b=' + actionCode;
 }
 
-exports.openBlinds = async (req, res) => {
-    let result = false;
-    
-    console.log('Open Blinds');
-    try{
-        const response = fetchWithTimeout(blindsActionUrl('1'));
+/**
+ * Send an action to the blinds controller.
+ * @param {'open'|'close'|'stop'} action
+ * @returns {Promise<boolean>} True when the controller accepted the request.
+ */
+exports.sendAction = async (action) => {
+    console.log('Blinds action: ' + action);
+    try {
+        const response = await fetchWithTimeout(blindsActionUrl(BLINDS_ACTION_CODES[action]));
         if (!response.ok) {
-            console.warn('Failed to open blinds');
-            res.status(500).send({success:false,error:'offline'});
-            return;
+            console.warn('Failed to ' + action + ' blinds (HTTP ' + response.status + ')');
+            return false;
         }
-    } catch (error){
-        console.warn('Failed to send open blinds request');
-        res.status(500).send({success:false,error:'offline'});
+        return true;
+    } catch (error) {
+        console.warn('Failed to send ' + action + ' blinds request');
+        return false;
     }
-    //const response = await response.json();
+};
+
+/**
+ * @param {'open'|'close'|'stop'} action
+ * @returns {import('express').RequestHandler}
+ */
+const actionHandler = (action) => async (req, res) => {
+    const ok = await exports.sendAction(action);
+    if (!ok) {
+        res.status(500).send({success:false,error:'offline'});
+        return;
+    }
     res.status(200).send({success:true,error:''});
 };
 
-exports.closeBlinds = async (req, res) => {
-    let result = false;
-    
-    console.log('Close Blinds');
-    try{
-        const response = fetchWithTimeout(blindsActionUrl('2'));
-        if (!response.ok) {
-            console.warn('Failed to close blinds');
-            res.status(500).send({success:false,error:'offline'});
-            return;
-        }
-    } catch (error){
-        console.warn('Failed to send close blinds request');
-        res.status(500).send({success:false,error:'offline'});
-    }
-    //const response = await response.json();
-    res.status(200).send({success:true,error:''});
-};
-
-exports.stopBlinds = async (req, res) => {
-    let result = false;
-    
-    console.log('Stop Blinds');
-    try{
-    const response = fetchWithTimeout(blindsActionUrl('5'));
-        if (!response.ok) {
-            console.warn('Failed to stop blinds');
-            res.status(500).send({success:false,error:'offline'});
-            return;
-        }
-    } catch (error){
-        console.warn('Failed to send stop blinds request');
-        res.status(500).send({success:false,error:'offline'});
-    }
-    //const response = await response.json();
-    res.status(200).send({success:true,error:''});
-};
+exports.openBlinds = actionHandler('open');
+exports.closeBlinds = actionHandler('close');
+exports.stopBlinds = actionHandler('stop');

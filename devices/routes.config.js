@@ -8,6 +8,7 @@ const LayoutController = require('./controllers/layout.controller');
 const TasmotaZigbeeController = require('./controllers/tasmota.zigbee.controller');
 const TasmotaZigbeeBulbsController = require('./controllers/tasmota.zigbee.bulbs.controller');
 const TasmotaZigbeeControlsController = require('./controllers/tasmota.zigbee.controls.controller');
+const MatterBridgeService = require('./services/matter.bridge.service');
 
 const PermissionMiddleware = require('../common/middlewares/auth.permission.middleware');
 const ValidationMiddleware = require('../common/middlewares/auth.validation.middleware');
@@ -176,6 +177,13 @@ exports.routesConfig = function (app) {
         ValidationMiddleware.validJWTNeeded,
         PermissionMiddleware.minimumPermissionLevelRequired(USER),
         VentsController.updateStatus
+    ]);
+    
+    // Matter bridge status / pairing codes
+    app.get('/matter', [
+        ValidationMiddleware.validJWTNeeded,
+        PermissionMiddleware.onlyUserCanDoThisAction( 0 ),
+        MatterBridgeService.getStatus
     ]);
     
     if (devices.server) {

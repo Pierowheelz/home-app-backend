@@ -76,6 +76,10 @@ class MqttHandler{
             });
         });
         
+        this.client.on('reconnect', () => {
+            console.log('MQTT reconnecting...');
+        });
+        
         this.client.on('error', this._handleError);
     };
     
@@ -91,10 +95,10 @@ class MqttHandler{
     };
     
     _handleError = (err) => {
+        // mqtt.js reconnects by itself (reconnectPeriod) with the original options and handlers, and the
+        // 'connect' handler re-subscribes and re-bootstraps devices. Don't end() / recreate the client here:
+        // that cancels auto-reconnect and the new client has no credentials or handlers.
         console.warn('MQTT Error: ', err);
-        
-        this.client.end();
-        this.client = mqtt.connect('mqtt://'+MQSETTINGS.url);
     };
 }
 

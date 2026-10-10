@@ -35,17 +35,30 @@ exports.getState = (req, res) => {
     res.status(200).send({state:currentState});
 };
 
-exports.turnOn = (req, res) => {
+/**
+ * @returns {'on'|'off'|'unknown'} Last relay state reported over MQTT.
+ */
+exports.getPowerState = () => currentState;
+
+/**
+ * Send a relay POWER command.
+ * @param {boolean} on
+ * @returns {boolean} False when MQTT is not attached / connected.
+ */
+exports.setPower = ( on ) => {
     const mqttName = appconfig.devices.speakers.mqttName;
-    const result = sendMqttCommand( 'cmnd/' + mqttName + '/POWER', '1' );
+    return sendMqttCommand( 'cmnd/' + mqttName + '/POWER', on ? '1' : '0' );
+};
+
+exports.turnOn = (req, res) => {
+    const result = exports.setPower( true );
     let resultCode = result ? 200 : 503;
     
     res.status(resultCode).send(result);
 };
 
 exports.turnOff = (req, res) => {
-    const mqttName = appconfig.devices.speakers.mqttName;
-    const result = sendMqttCommand( 'cmnd/' + mqttName + '/POWER', '0' );
+    const result = exports.setPower( false );
     let resultCode = result ? 200 : 503;
     
     res.status(resultCode).send(result);

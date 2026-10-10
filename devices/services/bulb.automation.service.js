@@ -26,6 +26,7 @@ const { getWallClockMinutesInTimeZone } = require('../lib/vent.automation.utils'
  *   overrideExpiry: number|null,
  *   deviceStateByBulb: Record<string, BulbDeviceState>,
  *   lastPushAtMs: number|null,
+ *   autoPushCount: number,
  * }} FixtureRuntimeState
  */
 
@@ -40,6 +41,18 @@ const BRIGHTNESS_TOLERANCE = 1;
 
 /** Kelvin match tolerance for white CT (covers ±50 send jitter + mired rounding). */
 const KELVIN_TOLERANCE = 100;
+
+/**
+ * After a push, bulbs report Power / CT / Dimmer as separate messages. Judge mismatches only once they have had
+ * time to arrive; earlier reports schedule one deferred check instead of pushing again.
+ */
+const PUSH_SETTLE_MS = 4000;
+
+/**
+ * Max mismatch-driven (non-forced) pushes per fixture until the next deliberate push (manual action, schedule
+ * change, power on) or wall-switch power-on, so a bulb that never reports the expected state can't flood Zigbee.
+ */
+const AUTO_PUSH_MAX = 3;
 
 /** Hue ≤ this and sat ≥ SAT_RED_MIN counts as red (colour 0). */
 const HUE_RED_MAX = 10;
@@ -81,6 +94,9 @@ function reportLooksRed(reported) {
 
 /** @type {Record<string, FixtureRuntimeState>} */
 const fixtureStates = {};
+
+/** @type {Record<string, NodeJS.Timeout>} fixtureId → pending post-push settle check */
+const settleTimers = {};
 
 /** @type {((fixtureId: string, plans: Record<string, BulbCommandPlan>) => void)|null} */
 let pushCommandsFn = null;
@@ -201,6 +217,7 @@ function ensureFixtureStates() {
                 overrideExpiry: null,
                 deviceStateByBulb,
                 lastPushAtMs: null,
+                autoPushCount: 0,
             };
         } else {
             const st = fixtureStates[fixtureId];
@@ -463,6 +480,20 @@ function normalizeLightReport(payload, opts = {}) {
     const ct = typeof payload.CT === 'number' && Number.isFinite(payload.CT) ? payload.CT : null;
     const looksRed = hue !== null && hue <= HUE_RED_MAX && sat !== null && sat >= SAT_RED_MIN;
 
+    if (colorMode === 2) {
+        // Bulb says it is in CT mode. Per ZCL, Hue/Sat keep their last (e.g. red) values after switching to CT,
+        // so drop them; otherwise reportLooksRed() keeps flagging a white bulb as red and reconcile loops.
+        out.hue = null;
+        out.sat = null;
+        if (ct !== null) {
+            out.colour = miredsToKelvin(ct);
+        }
+        if (typeof payload.LinkQuality === 'number' && Number.isFinite(payload.LinkQuality)) {
+            out.linkQuality = payload.LinkQuality;
+        }
+        return out;
+    }
+
     if (hue !== null) {
         out.hue = hue;
     }
@@ -485,7 +516,7 @@ function normalizeLightReport(payload, opts = {}) {
         if (looksRed) {
             out.colour = 0;
         }
-    } else if (colorMode === 2 || colorMode === 1) {
+    } else if (colorMode === 1) {
         if (ct !== null) {
             out.colour = miredsToKelvin(ct);
         }
@@ -571,6 +602,7 @@ function applyDeviceReport(addrRaw, payload) {
 
     // Wall-switch restore: drop colour/brightness trust so we force a full desired push.
     if (powerOnEdge) {
+        st.autoPushCount = 0;
         st.deviceStateByBulb[addr] = {
             brightness: patch.brightness !== undefined ? patch.brightness : null,
             colour: patch.colour !== undefined ? patch.colour : null,
@@ -797,6 +829,27 @@ function reconcileFixture(fixtureId, opts = {}) {
         return false;
     }
     if (typeof pushCommandsFn === 'function') {
+        if (opts.force || st.resumePending) {
+            st.autoPushCount = 0;
+        } else {
+            const sinceLastPushMs = Date.now() - (st.lastPushAtMs ?? 0);
+            if (sinceLastPushMs < PUSH_SETTLE_MS) {
+                if (!settleTimers[fixtureId]) {
+                    settleTimers[fixtureId] = setTimeout(() => {
+                        delete settleTimers[fixtureId];
+                        reconcileFixture(fixtureId);
+                    }, PUSH_SETTLE_MS - sinceLastPushMs);
+                }
+                return false;
+            }
+            if (st.autoPushCount >= AUTO_PUSH_MAX) {
+                return false;
+            }
+            st.autoPushCount++;
+            if (st.autoPushCount === AUTO_PUSH_MAX) {
+                console.warn(`Bulb automation: ${fixtureId} still doesn't report the expected state; re-sent ${AUTO_PUSH_MAX} times, giving up until the next change.`);
+            }
+        }
         pushCommandsFn(fixtureId, plans);
         st.resumePending = false;
         st.lastPushAtMs = Date.now();

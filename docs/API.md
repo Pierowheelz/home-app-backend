@@ -827,6 +827,39 @@ await api('/server/preventshutdown/1', { method: 'POST', token: accessToken });
 
 ---
 
+## Matter bridge (Google Home)
+
+Present when `matter.enabled` is `true` (see README).
+
+### `GET /matter`
+
+**Auth:** JWT + only user id `0` (`onlyUserCanDoThisAction(0)`).
+
+**Response `200`:**
+
+```json
+{
+  "commissioned": false,
+  "manualPairingCode": "34970112332",
+  "qrPairingCode": "MT:Y.K9042C00KA0648G00",
+  "devices": ["bulb-bathroom", "speakers", "blinds", "server"]
+}
+```
+
+- `commissioned` — `true` once paired with at least one controller (e.g. Google Home).
+- `manualPairingCode` / `qrPairingCode` — codes for the Google Home app (render `qrPairingCode` as a QR code).
+- `devices` — bridged endpoint ids.
+
+**Responses:** `404` — `{ "error": "matter_disabled" }` when the bridge is not running.
+
+**Sample:**
+
+```javascript
+const matter = await api('/matter', { token: accessToken });
+```
+
+---
+
 ## Catch-all
 
 Any path not matched above hits `GET /*`, which responds with plain text **`No Route!`** (not JSON).
