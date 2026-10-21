@@ -1188,8 +1188,31 @@ async function ingestRoomReading(room, temperatureC) {
     await evaluateAndAct(zig);
 }
 
+/**
+ * Current per-room readings: Zigbee + Wi-Fi supplements, with redundant "(alt)" sensors merged into their
+ * primary room (same values the dashboard shows). Synchronous; does not touch vent hardware.
+ * @returns {Record<string, { temperature: number|null, humidity: number|null, lastUpdateMs: number|null }>}
+ */
+function getRoomReadings() {
+    const merged = applyRedundancyMerge(mergeSensors(getReadingsSnapshotFromZigbee()));
+    /** @type {Record<string, { temperature: number|null, humidity: number|null, lastUpdateMs: number|null }>} */
+    const out = {};
+    for (const [room, row] of Object.entries(merged)) {
+        if (isRedundantAltSensorLabel(room)) {
+            continue;
+        }
+        out[room] = {
+            temperature: isFiniteNum(row.temperature) ? row.temperature : null,
+            humidity: isFiniteNum(row.humidity) ? row.humidity : null,
+            lastUpdateMs: typeof row.lastUpdateMs === 'number' ? row.lastUpdateMs : null,
+        };
+    }
+    return out;
+}
+
 module.exports = {
     getVentAutomationConfig,
+    getRoomReadings,
     recordManualOverride,
     onSensorTelegram,
     ingestRoomReading,

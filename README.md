@@ -187,6 +187,7 @@ With `matter.enabled`, the API also runs a Matter bridge. Google Home controls t
 | `speakers` | Plug | On / off. |
 | `blinds` | Blinds | Open / close / stop. The controller has no position feedback, so the position is assumed fully open / closed after each command, and partial percentages round to the nearest end. |
 | `server` | Plug | **On only.** "Off" is rejected, so "Hey Google, turn everything off" can't shut the server down. |
+| `roomSensors` | Temperature + humidity sensor (one per room) | Read-only. Keys are room names from `ventAutomation.zigbeeSensorMap`; readings are the same merged values as the vent dashboard (a room's "(alt)" sensor is combined with its primary). Shows offline after an hour with no reading. |
 
 Omit a key to leave that device out. `speakers` / `blinds` / `server` also need their `devices.*` entry. Changes made elsewhere (app, schedules, Zigbee remotes, physical buttons) reach Google Home within ~2 s.
 

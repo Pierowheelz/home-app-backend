@@ -3,12 +3,15 @@ const { Environment, ServerNode, Endpoint, VendorId, Logger } = require('@matter
 const { AggregatorEndpoint } = require('@matter/main/endpoints');
 const {
     ColorTemperatureLightDevice,
+    HumiditySensorDevice,
     OnOffPlugInUnitDevice,
+    TemperatureSensorDevice,
     WindowCoveringDevice,
 } = require('@matter/main/devices');
 const {
     BridgedDeviceBasicInformationServer,
     OnOffServer,
+    RelativeHumidityMeasurementServer,
     WindowCoveringServer,
 } = require('@matter/main/behaviors');
 const { ColorControl, WindowCovering } = require('@matter/main/clusters');
@@ -26,6 +29,7 @@ const { version: appVersion } = require('../../package.json');
  * - speakers → On/Off Plug-in Unit
  * - blinds → Window Covering (open / close / stop; no position feedback, so position is assumed)
  * - server → On/Off Plug-in Unit that only accepts "on" (off is rejected)
+ * - room sensors → Temperature Sensor + Humidity Sensor (one endpoint per room)
  *
  * Controller → device: remote attribute changes / commands call the existing controllers & services.
  * Device → controller: {@link syncAll} polls local state and writes it to the endpoints.
@@ -63,6 +67,9 @@ const KELVIN_MAX = 6500;
 const MIREDS_MIN = Math.round(1_000_000 / KELVIN_MAX);
 const MIREDS_MAX = Math.round(1_000_000 / KELVIN_MIN);
 
+/** Room sensors with no reading for this long show as offline (unreachable) in controllers. */
+const SENSOR_STALE_MS = 60 * 60 * 1000;
+
 /** Blinds: Matter lift position 0 = fully open, 10000 = fully closed. */
 const LIFT_OPEN = 0;
 const LIFT_CLOSED = 10000;
@@ -81,6 +88,7 @@ const syncHoldUntil = {};
  *   storagePath: string,
  *   networkInterface: string,
  *   bulbFixtures: Record<string, string>,
+ *   roomSensors: Record<string, string>,
  *   speakers: string,
  *   blinds: string,
  *   server: string,
@@ -94,15 +102,22 @@ function getMatterConfig() {
     const int = (v, def) => (Number.isInteger(v) ? /** @type {number} */ (v) : def);
     const str = (v) => (typeof v === 'string' ? v.trim() : '');
 
-    /** @type {Record<string, string>} */
-    const bulbFixtures = {};
-    if (r.bulbFixtures !== null && typeof r.bulbFixtures === 'object' && !Array.isArray(r.bulbFixtures)) {
-        for (const [fixtureId, name] of Object.entries(/** @type {Record<string, unknown>} */ (r.bulbFixtures))) {
-            if (str(name) !== '') {
-                bulbFixtures[fixtureId] = str(name);
+    /**
+     * @param {unknown} v `{ id: "Display name" }`
+     * @returns {Record<string, string>}
+     */
+    const nameMap = (v) => {
+        /** @type {Record<string, string>} */
+        const out = {};
+        if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+            for (const [id, name] of Object.entries(/** @type {Record<string, unknown>} */ (v))) {
+                if (str(name) !== '') {
+                    out[id] = str(name);
+                }
             }
         }
-    }
+        return out;
+    };
 
     return {
         enabled: r.enabled === true,
@@ -115,7 +130,8 @@ function getMatterConfig() {
         logLevel: str(r.logLevel) || DEFAULTS.logLevel,
         storagePath: str(r.storagePath),
         networkInterface: str(r.networkInterface),
-        bulbFixtures,
+        bulbFixtures: nameMap(r.bulbFixtures),
+        roomSensors: nameMap(r.roomSensors),
         speakers: str(r.speakers),
         blinds: str(r.blinds),
         server: str(r.server),
@@ -487,6 +503,63 @@ async function addBlinds(aggregator, name) {
 }
 
 /**
+ * Room temperature / humidity (merged Zigbee + Wi-Fi + redundant sensors, as on the dashboard) → one endpoint
+ * typed as both Temperature Sensor and Humidity Sensor. Read-only; marked unreachable when readings go stale.
+ * @param {Endpoint} aggregator
+ * @param {string} room Room label from `ventAutomation.zigbeeSensorMap`.
+ * @param {string} name
+ * @returns {Promise<void>}
+ */
+async function addRoomSensor(aggregator, room, name) {
+    const ventAutomation = require('./vent.automation.service');
+    const id = 'sensor-' + slug(room);
+    const endpoint = new Endpoint(
+        TemperatureSensorDevice.with(RelativeHumidityMeasurementServer, BridgedDeviceBasicInformationServer),
+        {
+            id,
+            bridgedDeviceBasicInformation: bridgedInfo(id, name),
+            descriptor: {
+                deviceTypeList: [
+                    { deviceType: TemperatureSensorDevice.deviceType, revision: TemperatureSensorDevice.deviceRevision },
+                    { deviceType: HumiditySensorDevice.deviceType, revision: HumiditySensorDevice.deviceRevision },
+                ],
+            },
+            temperatureMeasurement: { measuredValue: null, minMeasuredValue: -4000, maxMeasuredValue: 8000 },
+            relativeHumidityMeasurement: { measuredValue: null, minMeasuredValue: 0, maxMeasuredValue: 10000 },
+        },
+    );
+    await aggregator.add(endpoint);
+
+    bridgedDevices.push({
+        id,
+        sync: async () => {
+            const row = ventAutomation.getRoomReadings()[room];
+            const fresh = row !== undefined && row.lastUpdateMs !== null && Date.now() - row.lastUpdateMs < SENSOR_STALE_MS;
+            // Matter units: 0.01 °C and 0.01 %RH.
+            const temperature = fresh && row.temperature !== null ? Math.round(row.temperature * 100) : null;
+            const humidity = fresh && row.humidity !== null
+                ? Math.max(0, Math.min(10000, Math.round(row.humidity * 100)))
+                : null;
+            const state = endpoint.state;
+            /** @type {Record<string, Record<string, unknown>>} */
+            const update = {};
+            if (state.temperatureMeasurement.measuredValue !== temperature) {
+                update.temperatureMeasurement = { measuredValue: temperature };
+            }
+            if (state.relativeHumidityMeasurement.measuredValue !== humidity) {
+                update.relativeHumidityMeasurement = { measuredValue: humidity };
+            }
+            if (state.bridgedDeviceBasicInformation.reachable !== fresh) {
+                update.bridgedDeviceBasicInformation = { reachable: fresh };
+            }
+            if (Object.keys(update).length > 0) {
+                await endpoint.set(update);
+            }
+        },
+    });
+}
+
+/**
  * Push local state into every bridged endpoint.
  * @returns {Promise<void>}
  */
@@ -568,6 +641,9 @@ async function start(opts = {}) {
     }
     if (cfg.server !== '' && devices.server) {
         await addServer(aggregator, cfg.server);
+    }
+    for (const [room, name] of Object.entries(cfg.roomSensors)) {
+        await addRoomSensor(aggregator, room, name);
     }
 
     await serverNode.start();

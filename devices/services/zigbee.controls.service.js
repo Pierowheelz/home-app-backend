@@ -56,8 +56,33 @@ const COLOUR_AXIS_MAX = RED_AXIS_WIDTH + (KELVIN_MAX - KELVIN_MIN);
 /** Coalesce rapid DimmerStep / ColorTempStep telegrams into one override push. */
 const DIMMER_COALESCE_MS = 120;
 
+/**
+ * Ignore a repeat of the same press from the same remote within this window. Remotes often deliver one press
+ * twice (APS retry, or unicast + group copy), which would undo a toggle.
+ */
+const PRESS_DEDUPE_MS = 1000;
+
 /** @type {Record<string, PendingDimmerBurst>} */
 const pendingByAddr = {};
+
+/** @type {Record<string, { press: 'single'|'double'|'long', atMs: number }>} */
+const lastPressByAddr = {};
+
+/**
+ * True when this press repeats the last accepted press from `addr` inside {@link PRESS_DEDUPE_MS}.
+ * @param {string} addr
+ * @param {'single'|'double'|'long'} press
+ * @param {number} [nowMs]
+ * @returns {boolean}
+ */
+function isDuplicatePress(addr, press, nowMs = Date.now()) {
+    const last = lastPressByAddr[addr];
+    if (last && last.press === press && nowMs - last.atMs < PRESS_DEDUPE_MS) {
+        return true;
+    }
+    lastPressByAddr[addr] = { press, atMs: nowMs };
+    return false;
+}
 
 /**
  * Normalize Zigbee short address to `0xABCD` form.
@@ -473,7 +498,9 @@ function handleDeviceReport(addrRaw, payload) {
 
     const { press, dimmerSteps, colorTempSteps } = classifyRemotePayload(payload);
 
-    if (press !== null) {
+    if (press !== null && isDuplicatePress(addr, press)) {
+        console.log(`Zigbee controls: ignoring duplicate ${press} press from ${addr}`);
+    } else if (press !== null) {
         const action = spec[press];
         if (action) {
             void executeAction(action).catch((e) => {
