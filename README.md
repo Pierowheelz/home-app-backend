@@ -207,6 +207,51 @@ Omit a key to leave that device out. `speakers` / `blinds` / `server` also need 
 
 Pairing data lives in `matter.storagePath` (default `/config/matter` in Docker, so it survives image updates). Deleting it means removing the bridge from Google Home and pairing again.
 
+### Ring doorbell (ring-mqtt)
+
+Ring has no open API, so doorbell presses come from [ring-mqtt](https://github.com/tsightler/ring-mqtt), which runs as its own container and publishes Ring events to the same MQTT broker. Each press runs the actions in `ring.doorbells.<device id>.ding`, using the same action types as `zigbeeControls` (`bulb`, `bulbReset`, `bulbPower`, `bulbFlash`, `vent`).
+
+`bulbFlash` cycles a fixture's secondary bulb(s) (the ones switched off at 1%; a single-bulb fixture uses its only bulb) through colours, then puts the fixture back to its schedule / override state:
+
+| Key | Default | |
+|-----|---------|---|
+| `fixtureId` | — | `bulbAutomation` fixture id. |
+| `colours` | `["red", "blue", "green", "white"]` | Any of `red`, `yellow`, `green`, `cyan`, `blue`, `purple`, `white`. |
+| `durationMs` | `5000` | Total flash time (max 60 s). |
+| `stepMs` | `625` | Time per colour (min 400). |
+| `brightness` | `100` | Percent. |
+
+While a fixture is flashing, automation doesn't correct it, and a second flash on it is ignored. Changes made meanwhile (app, schedule, remotes) apply when the flash ends.
+
+### Sonos doorbell chime
+
+With `sonos.enabled`, a `sonosChime` action plays a chime on Sonos speakers (S1 or S2) over local UPnP. It doesn't need LMS, the Sonos app or the Sonos cloud. Speakers are found by SSDP at startup and every 10 minutes after (or queried from `sonos.hosts`), so a press doesn't wait on discovery. The API serves the chime file at `GET /sonos/chime.wav` without auth, because the speakers fetch it themselves.
+
+| `sonosChime` key | Default | |
+|-----|---------|---|
+| `volume` | `30` | Chime volume, 0–100. |
+| `volumes` | — | Per-room override, e.g. `{ "Patio": 50 }`. Room names as in the Sonos app. |
+| `rooms` | all | Only chime these rooms. A grouped room chimes its whole group. |
+| `skipPlaying` | `true` | Leave speakers that are already playing alone. With `false`, the chime stops whatever was playing. |
+
+Each speaker's volume is put back after the chime. Whatever it had loaded is not (LMS or the Sonos app re-sets it on the next play).
+
+| `sonos` key | |
+|-----|---|
+| `chimeFile` | Your own chime (MP3 or WAV, path inside the container, e.g. `/config/chime.mp3`). Default: the built-in two-tone chime. |
+| `serverUrl` | URL the speakers use to reach this API, e.g. `http://192.168.1.10:3800`. Default: this host's IP on the speaker's subnet and `port`. |
+| `hosts` | Speaker IPs to query instead of SSDP discovery. |
+
+**Setup**
+
+1. Add a broker user for ring-mqtt (e.g. `mosquitto_passwd -b passwords.txt ringmqtt <password>`, then reload Mosquitto).
+2. Create `/opt/ring-mqtt/config.json` with `"mqtt_url": "mqtt://ringmqtt:<password>@mosquitto:1883"` (see the [ring-mqtt configuration docs](https://github.com/tsightler/ring-mqtt/wiki/Configuration-Details)).
+3. Run the `tsightler/ring-mqtt` image with `/opt/ring-mqtt` mounted at `/data` and port `55123` published.
+4. Open `http://<host>:55123/` and log in with your Ring account and 2FA code. The refresh token is saved in `/opt/ring-mqtt/ring-state.json` and the login page shuts down once connected.
+5. Set `ring.enabled` to `true`, restart, and press the doorbell. The API log shows `Ring: press on unconfigured doorbell "<device id>"`. Add that id under `ring.doorbells` with its actions and restart again.
+
+Presses are read from `ring/<location>/camera/<device>/ding/attributes` and keyed on its `lastDing` timestamp, so ring-mqtt republishing the ding state (it stays `ON` for 180 s) doesn't re-run actions. Every separate press does run them again, so avoid `"power": "toggle"`.
+
 ## Installation
 
 1. Clone the repo

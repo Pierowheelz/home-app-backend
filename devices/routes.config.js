@@ -1,3 +1,4 @@
+const path = require('path');
 const GarageController = require('./controllers/garage.controller');
 const BlindsController = require('./controllers/blinds.controller');
 const SpeakersController = require('./controllers/speakers.controller');
@@ -8,7 +9,9 @@ const LayoutController = require('./controllers/layout.controller');
 const TasmotaZigbeeController = require('./controllers/tasmota.zigbee.controller');
 const TasmotaZigbeeBulbsController = require('./controllers/tasmota.zigbee.bulbs.controller');
 const TasmotaZigbeeControlsController = require('./controllers/tasmota.zigbee.controls.controller');
+const RingDoorbellController = require('./controllers/ring.doorbell.controller');
 const MatterBridgeService = require('./services/matter.bridge.service');
+const SonosChimeService = require('./services/sonos.chime.service');
 
 const PermissionMiddleware = require('../common/middlewares/auth.permission.middleware');
 const ValidationMiddleware = require('../common/middlewares/auth.validation.middleware');
@@ -32,7 +35,9 @@ if (devices.server) {
 TasmotaZigbeeController.attachMqtt( mqttSession );
 TasmotaZigbeeBulbsController.attachMqtt( mqttSession );
 TasmotaZigbeeControlsController.attachMqtt( mqttSession );
+RingDoorbellController.attachMqtt( mqttSession );
 mqttSession.connect();
+SonosChimeService.start();
 
 exports.routesConfig = function (app) {
     app.get('/layout', [
@@ -186,6 +191,19 @@ exports.routesConfig = function (app) {
         MatterBridgeService.getStatus
     ]);
     
+    // Doorbell chime file, fetched by the Sonos speakers themselves (they can't send a JWT)
+    const sonosConfig = SonosChimeService.getSonosConfig();
+    if (sonosConfig.enabled) {
+        app.get(SonosChimeService.getChimePath(), (req, res) => {
+            res.sendFile(path.resolve(sonosConfig.chimeFile), (err) => {
+                if (err && !res.headersSent) {
+                    console.warn('Sonos: chime file not served:', err.message);
+                    res.sendStatus(404);
+                }
+            });
+        });
+    }
+
     if (devices.server) {
         app.get('/server', [
             ValidationMiddleware.validJWTNeeded,

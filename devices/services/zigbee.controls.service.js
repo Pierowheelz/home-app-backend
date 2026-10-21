@@ -1,9 +1,10 @@
 const bulbAutomation = require('./bulb.automation.service');
 const ventAutomation = require('./vent.automation.service');
 const ventClient = require('../lib/vent.client');
+const sonosChime = require('./sonos.chime.service');
 
 /**
- * Config-driven Zigbee remotes: button presses run bulb/bulbReset/bulbPower/vent actions;
+ * Config-driven Zigbee remotes: button presses run bulb/bulbReset/bulbPower/bulbFlash/vent/sonosChime actions;
  * dimmer turns adjust fixture brightness / colour temp (including red below 2700K).
  */
 
@@ -11,9 +12,18 @@ const ventClient = require('../lib/vent.client');
  * @typedef {{ type: 'bulb', fixtureId: string, brightness: number, colour: number }} BulbAction
  * @typedef {{ type: 'bulbReset', fixtureId: string }} BulbResetAction
  * @typedef {{ type: 'bulbPower', fixtureId: string, power: 'on'|'off'|'toggle' }} BulbPowerAction
+ * @typedef {{
+ *   type: 'bulbFlash',
+ *   fixtureId: string,
+ *   colours: string[],
+ *   durationMs: number,
+ *   stepMs: number,
+ *   brightness: number,
+ * }} BulbFlashAction
  * @typedef {{ type: 'vent', percent: number, motorId?: number, room?: string }} VentAction
  * `motorId` on vent actions is the flat external id (same namespace as `POST /vents/:motorId`).
- * @typedef {BulbAction|BulbResetAction|BulbPowerAction|VentAction} ControlAction
+ * @typedef {{ type: 'sonosChime' } & import('./sonos.chime.service').ChimeOptions} SonosChimeAction
+ * @typedef {BulbAction|BulbResetAction|BulbPowerAction|BulbFlashAction|VentAction|SonosChimeAction} ControlAction
  * @typedef {'button'|'dimmer'} ControlDeviceType
  * @typedef {{
  *   type: ControlDeviceType,
@@ -42,6 +52,19 @@ const DEFAULTS = {
     dimmerStepPerPercent: 10,
     colorTempFullScaleSteps: 1000,
 };
+
+/** `bulbFlash` defaults. Each step sends up to 3 Zigbee commands per bulb, ~120 ms apart. */
+const FLASH_DEFAULTS = {
+    colours: ['red', 'blue', 'green', 'white'],
+    durationMs: 5000,
+    stepMs: 625,
+    brightness: 100,
+};
+const FLASH_STEP_MIN_MS = 400;
+const FLASH_DURATION_MAX_MS = 60_000;
+
+/** `sonosChime` default volume (0–100). */
+const CHIME_DEFAULT_VOLUME = 30;
 
 /** Red band width on the virtual colour axis (maps to `colour: 0`). */
 const RED_AXIS_WIDTH = 10;
@@ -204,6 +227,57 @@ function parseAction(raw) {
         }
         return { type: 'bulbPower', fixtureId, power };
     }
+    if (o.type === 'bulbFlash') {
+        const fixtureId = typeof o.fixtureId === 'string' ? o.fixtureId.trim() : '';
+        const colours = o.colours === undefined ? FLASH_DEFAULTS.colours : o.colours;
+        const durationMs = o.durationMs === undefined ? FLASH_DEFAULTS.durationMs : Number(o.durationMs);
+        const stepMs = o.stepMs === undefined ? FLASH_DEFAULTS.stepMs : Number(o.stepMs);
+        const brightness = o.brightness === undefined ? FLASH_DEFAULTS.brightness : Number(o.brightness);
+        if (
+            fixtureId === '' ||
+            !Array.isArray(colours) ||
+            colours.length === 0 ||
+            !colours.every((c) => Object.prototype.hasOwnProperty.call(bulbAutomation.FLASH_COLOURS, c))
+        ) {
+            return null;
+        }
+        if (!Number.isInteger(stepMs) || stepMs < FLASH_STEP_MIN_MS) {
+            return null;
+        }
+        if (!Number.isInteger(durationMs) || durationMs < stepMs || durationMs > FLASH_DURATION_MAX_MS) {
+            return null;
+        }
+        if (!Number.isInteger(brightness) || brightness < 1 || brightness > 100) {
+            return null;
+        }
+        return { type: 'bulbFlash', fixtureId, colours: [...colours], durationMs, stepMs, brightness };
+    }
+    if (o.type === 'sonosChime') {
+        const isVolume = (v) => Number.isInteger(v) && v >= 0 && v <= 100;
+        const volume = o.volume === undefined ? CHIME_DEFAULT_VOLUME : Number(o.volume);
+        if (!isVolume(volume)) {
+            return null;
+        }
+        /** @type {SonosChimeAction} */
+        const action = { type: 'sonosChime', volume, skipPlaying: o.skipPlaying !== false };
+        if (o.volumes !== undefined) {
+            if (o.volumes === null || typeof o.volumes !== 'object' || Array.isArray(o.volumes)) {
+                return null;
+            }
+            const volumes = /** @type {Record<string, unknown>} */ (o.volumes);
+            if (!Object.values(volumes).every(isVolume)) {
+                return null;
+            }
+            action.volumes = /** @type {Record<string, number>} */ ({ ...volumes });
+        }
+        if (o.rooms !== undefined) {
+            if (!Array.isArray(o.rooms) || !o.rooms.every((r) => typeof r === 'string' && r.trim() !== '')) {
+                return null;
+            }
+            action.rooms = o.rooms.map((r) => r.trim());
+        }
+        return action;
+    }
     if (o.type === 'vent') {
         const percent = Number(o.percent);
         if (!Number.isInteger(percent) || percent < 0 || percent > 100) {
@@ -357,6 +431,16 @@ async function executeAction(action) {
             return;
         }
         bulbAutomation.reconcileFixture(action.fixtureId, { force: true });
+        return;
+    }
+    if (action.type === 'bulbFlash') {
+        if (!bulbAutomation.flashFixture(action.fixtureId, action)) {
+            console.warn(`Zigbee controls: can't flash fixture "${action.fixtureId}" (unknown, disabled or already flashing)`);
+        }
+        return;
+    }
+    if (action.type === 'sonosChime') {
+        await sonosChime.playChime(action);
         return;
     }
     if (action.type === 'vent') {
@@ -521,6 +605,7 @@ module.exports = {
     colourToAxis,
     axisToColour,
     classifyRemotePayload,
+    parseAction,
     executeAction,
     handleDeviceReport,
 };

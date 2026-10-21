@@ -1,12 +1,47 @@
 const mqtt = require('mqtt');
 const MQSETTINGS = appconfig.mqtt;
 
+/**
+ * True when `topic` matches an MQTT subscription filter (`+` = one level, `#` = remaining levels).
+ * @param {string} filter
+ * @param {string} topic
+ * @returns {boolean}
+ */
+function topicMatches(filter, topic) {
+    const f = filter.split('/');
+    const t = topic.split('/');
+    for (let i = 0; i < f.length; i++) {
+        if (f[i] === '#') {
+            return true;
+        }
+        if (i >= t.length || (f[i] !== '+' && f[i] !== t[i])) {
+            return false;
+        }
+    }
+    return f.length === t.length;
+}
+
 class MqttHandler{
     
     devices = [];
     
+    topics = [];
+
     constructor() {
         
+    }
+
+    /**
+     * Subscribe to an arbitrary topic filter (non-Tasmota sources, e.g. ring-mqtt). Matching messages go only to
+     * this handler, as the raw payload string.
+     * @param {string} filter MQTT topic filter; `+` / `#` wildcards allowed.
+     * @param {(message: string, topic: string) => void} messageHandler
+     */
+    addTopic = (filter, messageHandler) => {
+        this.topics.push({
+            filter,
+            onMessage: messageHandler,
+        });
     }
     
     /**
@@ -50,11 +85,31 @@ class MqttHandler{
                     }
                 });
             });
+
+            if (this.topics.length > 0) {
+                this.client.subscribe( this.topics.map((t) => t.filter), (err) => {
+                    if (err) {
+                        console.warn('MQTT subscribe failed: ', err);
+                    }
+                });
+            }
         });
         
         this.client.on('message', (topic, message) => {
             // message is Buffer
             console.log(topic, message.toString());
+
+            const topicSubs = this.topics.filter((t) => topicMatches(t.filter, topic));
+            if (topicSubs.length > 0) {
+                topicSubs.forEach((t) => {
+                    try {
+                        t.onMessage( message.toString(), topic );
+                    } catch (err) {
+                        console.warn('MQTT topic handler error: ', err);
+                    }
+                });
+                return;
+            }
             
             // Decode message JSON
             let msgJson = {};
@@ -103,3 +158,4 @@ class MqttHandler{
 }
 
 module.exports = MqttHandler;
+module.exports.topicMatches = topicMatches;

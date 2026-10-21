@@ -91,7 +91,7 @@ function jitterInt(base, spread, min, max) {
  * Kelvin and red hue are jittered slightly each send so the value is unlikely to match
  * the bulb's last-seen command (suspected firmware no-op when unchanged).
  * @param {string} addr
- * @param {{ power: 'off' } | { power: 'on', brightness: number, colour: number } | { power: 'on' }} plan
+ * @param {import('../services/bulb.automation.service').BulbCommandPlan} plan
  * @returns {string[]} JSON payload strings for `cmnd/tasmota_zigbee/ZbSend`
  */
 function buildZbSendPayloads(addr, plan) {
@@ -102,10 +102,12 @@ function buildZbSendPayloads(addr, plan) {
         return payloads;
     }
     payloads.push(JSON.stringify({ Device: addr, Send: { Power: 'On' } }));
-    if (!('colour' in plan)) {
+    if (!('brightness' in plan)) {
         return payloads;
     }
-    if (plan.colour === 0) {
+    if ('hue' in plan) {
+        payloads.push(JSON.stringify({ Device: addr, Send: { HueSat: `${plan.hue},254` } }));
+    } else if (plan.colour === 0) {
         // Red ≈ hue 0; jitter within 0–8 so it still reads as red but differs per send.
         const hue = jitterInt(0, 8, 0, 8);
         payloads.push(JSON.stringify({ Device: addr, Send: { HueSat: `${hue},254` } }));
@@ -127,7 +129,7 @@ function buildZbSendPayloads(addr, plan) {
  * Publish command plans for mismatched bulbs on a fixture.
  * Staggers ZbSend slightly so the coordinator / bulb can finish each cluster command.
  * @param {string} _fixtureId
- * @param {Record<string, { power: 'off' } | { power: 'on', brightness: number, colour: number } | { power: 'on' }>} plans
+ * @param {Record<string, import('../services/bulb.automation.service').BulbCommandPlan>} plans
  * @returns {void}
  */
 function pushFixtureCommands(_fixtureId, plans) {

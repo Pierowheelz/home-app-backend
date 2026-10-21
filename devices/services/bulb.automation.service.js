@@ -12,7 +12,8 @@ const { getWallClockMinutesInTimeZone } = require('../lib/vent.automation.utils'
  *   sat: number|null,
  * }} BulbDeviceState
  * Bare `{ power: 'on' }` only powers the bulb on (it keeps its own last brightness/colour).
- * @typedef {{ power: 'off' } | { power: 'on', brightness: number, colour: number } | { power: 'on' }} BulbCommandPlan
+ * `hue` (Zigbee 0–254, full saturation) is only pushed by {@link flashFixture}, never matched against reports.
+ * @typedef {{ power: 'off' } | { power: 'on', brightness: number, colour: number } | { power: 'on', brightness: number, hue: number } | { power: 'on' }} BulbCommandPlan
  * @typedef {{ from: string, to: string, brightness: number, colour: number }} BulbScheduleWindow
  * `power` is the fixture's logical on/off. While `off`, schedule / override-expiry automations push nothing;
  * manual actions turn it back on. `resumePending` marks an off→on transition whose next reconcile must
@@ -100,6 +101,20 @@ const settleTimers = {};
 
 /** @type {((fixtureId: string, plans: Record<string, BulbCommandPlan>) => void)|null} */
 let pushCommandsFn = null;
+
+/** Fixtures mid-flash; reconcile is paused for them until the flash restores them. */
+const flashingFixtures = new Set();
+
+/** Flash colours: Zigbee hue (0–254, full saturation) or white Kelvin. */
+const FLASH_COLOURS = {
+    red: { hue: 0 },
+    yellow: { hue: 42 },
+    green: { hue: 85 },
+    cyan: { hue: 127 },
+    blue: { hue: 170 },
+    purple: { hue: 212 },
+    white: { kelvin: 4000 },
+};
 
 /**
  * Normalize Zigbee short address to `0xABCD` form.
@@ -803,6 +818,10 @@ function reconcileFixture(fixtureId, opts = {}) {
     if (!cfg.enabled || !cfg.fixtures[fixtureId] || !st) {
         return false;
     }
+    if (flashingFixtures.has(fixtureId)) {
+        // The flash forces a reconcile when it ends, so anything requested meanwhile still applies.
+        return false;
+    }
     /** @type {Record<string, BulbCommandPlan>|null} */
     let plans;
     if (st.power === 'off') {
@@ -867,6 +886,82 @@ function reconcileFixture(fixtureId, opts = {}) {
         return true;
     }
     return false;
+}
+
+/**
+ * Flash a fixture through colours (e.g. on a doorbell press), then restore it. Flashes the secondary bulb(s), the
+ * ones switched off at 1%, so the primary keeps its state; a single-bulb fixture flashes its only bulb.
+ * @param {string} fixtureId
+ * @param {{ colours: string[], durationMs: number, stepMs: number, brightness: number }} opts Colour names are
+ *   {@link FLASH_COLOURS} keys; one colour per `stepMs`, cycling, for `durationMs`.
+ * @returns {boolean} False when the fixture is unknown, automation is disabled or it is already flashing.
+ */
+function flashFixture(fixtureId, opts) {
+    ensureFixtureStates();
+    const cfg = getBulbAutomationConfig();
+    const st = fixtureStates[fixtureId];
+    const bulbs = cfg.fixtures[fixtureId]?.bulbs ?? [];
+    const colours = opts.colours.filter((c) => Object.prototype.hasOwnProperty.call(FLASH_COLOURS, c));
+    if (!cfg.enabled || !st || bulbs.length === 0 || colours.length === 0 || flashingFixtures.has(fixtureId)) {
+        return false;
+    }
+    if (typeof pushCommandsFn !== 'function') {
+        return false;
+    }
+    const push = pushCommandsFn;
+
+    const flashBulbs = bulbs.length >= 2 ? bulbs.slice(1) : bulbs;
+    /** @type {Record<string, BulbDeviceState>} */
+    const before = {};
+    for (const addr of flashBulbs) {
+        before[addr] = { ...st.deviceStateByBulb[addr] };
+    }
+
+    flashingFixtures.add(fixtureId);
+    const steps = Math.max(1, Math.floor(opts.durationMs / opts.stepMs));
+    for (let i = 0; i < steps; i++) {
+        const colour = FLASH_COLOURS[colours[i % colours.length]];
+        /** @type {Record<string, BulbCommandPlan>} */
+        const plans = {};
+        for (const addr of flashBulbs) {
+            plans[addr] = 'hue' in colour
+                ? { power: 'on', brightness: opts.brightness, hue: colour.hue }
+                : { power: 'on', brightness: opts.brightness, colour: colour.kelvin };
+        }
+        setTimeout(() => push(fixtureId, plans), i * opts.stepMs);
+    }
+    setTimeout(() => {
+        flashingFixtures.delete(fixtureId);
+        restoreAfterFlash(fixtureId, flashBulbs, before);
+    }, steps * opts.stepMs);
+    return true;
+}
+
+/**
+ * Put a fixture back after a flash: re-apply its desired state, or, when it has none (no schedule / override),
+ * the flashed bulbs' last reported state from before the flash.
+ * @param {string} fixtureId
+ * @param {string[]} flashBulbs
+ * @param {Record<string, BulbDeviceState>} before
+ * @returns {void}
+ */
+function restoreAfterFlash(fixtureId, flashBulbs, before) {
+    if (reconcileFixture(fixtureId, { force: true }) || typeof pushCommandsFn !== 'function') {
+        return;
+    }
+    /** @type {Record<string, BulbCommandPlan>} */
+    const plans = {};
+    for (const addr of flashBulbs) {
+        const ds = before[addr];
+        if (ds.power === 'off') {
+            plans[addr] = { power: 'off' };
+        } else if (typeof ds.brightness === 'number' && typeof ds.colour === 'number') {
+            plans[addr] = { power: 'on', brightness: ds.brightness, colour: ds.colour };
+        }
+    }
+    if (Object.keys(plans).length > 0) {
+        pushCommandsFn(fixtureId, plans);
+    }
 }
 
 /**
@@ -1019,6 +1114,8 @@ module.exports = {
     setPower,
     plansNeedingPush,
     reconcileFixture,
+    FLASH_COLOURS,
+    flashFixture,
     onScheduleTick,
     getFixtureSnapshot,
     getAllFixtureSnapshots,
